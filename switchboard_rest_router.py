@@ -479,7 +479,7 @@ class Router(dict):
         self[VLANID_NONE] = vlan_router
 
         # Start cyclic routing table check.
-        self.thread = hub.spawn(self._cyclic_update_routing_tbl)
+        self.thread = hub.spawn(self._cyclic_update_routing_tbls)
         self.logger.info('Start cyclic routing table update.',
                          extra=self.sw_id)
 
@@ -514,12 +514,15 @@ class Router(dict):
         return self[vlan_id]
 
     def _del_vlan_router(self, vlan_id, waiters):
-        #  Remove unnecessary VlanRouter.
+        # FIXME: Someone *really* needs to have this return success or failure, and and error message as to *why*
+        # Remove unnecessary VlanRouter.
         if vlan_id == VLANID_NONE:
             return
 
-        # FIXME: Right now, we cannot delete a VLAN router, because we are not deleting unused RoutingTable objects
         vlan_router = self[vlan_id]
+        # GC empty subnet routing tables before attempting the delete.
+        vlan_router.policy_routing_tbl.gc_subnet_tables()
+
         if (len(vlan_router.address_data) == 0
                 and len(vlan_router.policy_routing_tbl) == 1
                 and len(vlan_router.policy_routing_tbl[INADDR_ANY]) == 0):
@@ -593,7 +596,7 @@ class Router(dict):
                 self.logger.debug('Drop unknown vlan packet. [vlan_id=%d]',
                                   vlan_id, extra=self.sw_id)
 
-    def _cyclic_update_routing_tbl(self):
+    def _cyclic_update_routing_tbls(self):
         while True:
             # send ARP to all gateways.
             for vlan_router in self.values():
@@ -1001,7 +1004,7 @@ class VlanRouter(object):
         #  Update routing table.
         # case: Receive ARP from an internal host
         #  Learning host MAC.
-        gw_flg = self._update_routing_tbl(msg, header_list)
+        gw_flg = self._update_routing_tbls(msg, header_list)
         if gw_flg is False:
             self._learning_host_mac(msg, header_list)
 
@@ -1187,7 +1190,7 @@ class VlanRouter(object):
             self.logger.info('Send ICMP destination unreachable to [%s].',
                              dstip, extra=self.sw_id)
 
-    def _update_routing_tbl(self, msg, header_list):
+    def _update_routing_tbls(self, msg, header_list):
         # Set flow: routing to gateway.
         out_port = self.ofctl.get_packetin_inport(msg)
         src_mac = header_list[ARP].src_mac
@@ -1386,9 +1389,12 @@ class PolicyRoutingTable(dict):
         self[key] = RoutingTable(address)
         return self[key]
 
-    def delete_table(self, src_address):
-        # FIXME: Implement to achieve deletion of an unused RoutingTable
-        pass
+    def gc_subnet_tables(self):
+        for key, value in self.items():
+            if key != INADDR_ANY:
+                if (len(value) == 0):
+                    del self[key]
+        return
 
     def get_gateways(self):
         gateways = []
@@ -1457,7 +1463,6 @@ class RoutingTable(dict):
     def get_gateways(self):
         return [routing_data.gateway_ip for routing_data in self.values()]
 
-    #def get_data(self, gw_mac=None, dst_ip=None, src_ip=None):
     def get_data(self, gw_mac=None, dst_ip=None):
         if gw_mac is not None:
             for route in self.values():
@@ -1492,7 +1497,7 @@ class Route(object):
         self.gateway_mac = None
         if src_address is None:
             self.src_ip = 0
-            self.src_netmask = 32
+            self.src_netmask = 0
         else:
             self.src_ip = src_address.nw_addr
             self.src_netmask = src_address.netmask
