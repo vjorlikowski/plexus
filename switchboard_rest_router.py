@@ -81,6 +81,10 @@ from ryu.ofproto import ofproto_v1_3
 #    parameter = {"destination": "A.B.C.D/M", "gateway": "E.F.G.H"}
 #  case2-2: set default route.
 #    parameter = {"gateway": "E.F.G.H"}
+#  case2-3: set static route for a specific address range.
+#    parameter = {"destination": "A.B.C.D/M", "gateway": "E.F.G.H", "address_id": "<int>"}
+#  case2-4: set default route for a specific address range.
+#    parameter = {"gateway": "E.F.G.H", "address_id": "<int>"}
 #
 #
 ## 3. delete address data or routing data.
@@ -128,7 +132,7 @@ COOKIE_DEFAULT_ID = 0
 COOKIE_SHIFT_VLANID = 32
 COOKIE_SHIFT_ROUTEID = 16
 
-DEFAULT_ROUTE = '0.0.0.0/0'
+INADDR_ANY = '0.0.0.0/0'
 IDLE_TIMEOUT = 1800  # sec
 DEFAULT_TTL = 64
 
@@ -148,17 +152,20 @@ REST_ROUTE = 'route'
 REST_DESTINATION = 'destination'
 REST_GATEWAY = 'gateway'
 REST_GATEWAY_MAC = 'gateway_mac'
+REST_SOURCE = 'source'
 
 PRIORITY_VLAN_SHIFT = 1000
 PRIORITY_NETMASK_SHIFT = 32
 
 PRIORITY_ARP_HANDLING = 1
 PRIORITY_DEFAULT_ROUTING = 1
-PRIORITY_MAC_LEARNING = 2
-PRIORITY_STATIC_ROUTING = 2
-PRIORITY_IMPLICIT_ROUTING = 3
-PRIORITY_L2_SWITCHING = 4
-PRIORITY_IP_HANDLING = 5
+PRIORITY_ADDRESSED_DEFAULT_ROUTING = 2
+PRIORITY_MAC_LEARNING = 3
+PRIORITY_STATIC_ROUTING = 3
+PRIORITY_ADDRESSED_STATIC_ROUTING = 4
+PRIORITY_IMPLICIT_ROUTING = 5
+PRIORITY_L2_SWITCHING = 6
+PRIORITY_IP_HANDLING = 7
 
 PRIORITY_TYPE_ROUTE = 'priority_route'
 
@@ -170,18 +177,24 @@ def get_priority(priority_type, vid=0, route=None):
     if priority_type == PRIORITY_TYPE_ROUTE:
         assert route is not None
         if route.dst_ip:
-            priority_type = PRIORITY_STATIC_ROUTING
-            priority = priority_type + route.netmask
+            if route.src_ip:
+                priority_type = PRIORITY_ADDRESSED_STATIC_ROUTING
+            else:
+                priority_type = PRIORITY_STATIC_ROUTING
+            priority = priority_type + route.dst_netmask
             log_msg = 'static routing'
         else:
-            priority_type = PRIORITY_DEFAULT_ROUTING
+            if route.src_ip:
+                priority_type = PRIORITY_ADDRESSED_DEFAULT_ROUTING
+            else:
+                priority_type = PRIORITY_DEFAULT_ROUTING
             priority = priority_type
             log_msg = 'default routing'
 
     if vid or priority_type == PRIORITY_IP_HANDLING:
         priority += PRIORITY_VLAN_SHIFT
 
-    if priority_type > PRIORITY_STATIC_ROUTING:
+    if priority_type > PRIORITY_ADDRESSED_STATIC_ROUTING:
         priority += PRIORITY_NETMASK_SHIFT
 
     if log_msg is None:
@@ -505,9 +518,11 @@ class Router(dict):
         if vlan_id == VLANID_NONE:
             return
 
+        # FIXME: Right now, we cannot delete a VLAN router, because we are not deleting unused RoutingTable objects
         vlan_router = self[vlan_id]
         if (len(vlan_router.address_data) == 0
-                and len(vlan_router.routing_tbl) == 0):
+                and len(vlan_router.policy_routing_tbl) == 1
+                and len(vlan_router.policy_routing_tbl[INADDR_ANY]) == 0):
             vlan_router.delete(waiters)
             del self[vlan_id]
 
@@ -598,7 +613,7 @@ class VlanRouter(object):
 
         self.port_data = port_data
         self.address_data = AddressData()
-        self.routing_tbl = RoutingTable()
+        self.policy_routing_tbl = PolicyRoutingTable()
         self.packet_buffer = SuspendPacketList(self.send_icmp_unreach_error)
         self.ofctl = OfCtl.factory(dp, logger)
 
@@ -674,13 +689,17 @@ class VlanRouter(object):
 
     def _get_routing_data(self):
         routing_data = []
-        for key, value in self.routing_tbl.items():
-            gateway = ip_addr_ntoa(value.gateway_ip)
-            data = {REST_ROUTEID: value.route_id,
-                    REST_DESTINATION: key,
-                    REST_GATEWAY: gateway,
-                    REST_GATEWAY_MAC: value.gateway_mac}
-            routing_data.append(data)
+        for table in self.policy_routing_tbl.values():
+            for dst, route in table.items():
+                gateway = ip_addr_ntoa(route.gateway_ip)
+                source_addr = ip_addr_ntoa(route.src_ip)
+                source = '%s/%d' % (source_addr, route.src_netmask)
+                data = {REST_ROUTEID: route.route_id,
+                        REST_DESTINATION: dst,
+                        REST_GATEWAY: gateway,
+                        REST_GATEWAY_MAC: route.gateway_mac,
+                        REST_SOURCE: source}
+                routing_data.append(data)
         return {REST_ROUTE: routing_data}
 
     def set_data(self, data):
@@ -695,11 +714,16 @@ class VlanRouter(object):
             # Set routing data
             elif REST_GATEWAY in data:
                 gateway = data[REST_GATEWAY]
+                address_id = None
+                destination = INADDR_ANY
+
                 if REST_DESTINATION in data:
                     destination = data[REST_DESTINATION]
-                else:
-                    destination = DEFAULT_ROUTE
-                route_id = self._set_routing_data(destination, gateway)
+
+                if REST_ADDRESSID in data:
+                    address_id = data[REST_ADDRESSID]
+
+                route_id = self._set_routing_data(destination, gateway, address_id)
                 details = 'Add route [route_id=%d]' % route_id
 
         except CommandFailure as err_msg:
@@ -741,10 +765,25 @@ class VlanRouter(object):
 
         return address.address_id
 
-    def _set_routing_data(self, destination, gateway):
+    def _set_routing_data(self, destination, gateway, address_id=None):
         err_msg = 'Invalid [%s] value.' % REST_GATEWAY
         dst_ip = ip_addr_aton(gateway, err_msg=err_msg)
         address = self.address_data.get_data(ip=dst_ip)
+        requested_address = None
+
+        if address_id is not None:
+            if address_id != REST_ALL:
+                try:
+                    address_id = int(address_id)
+                except ValueError as e:
+                    err_msg = 'Invalid [%s] value. %s'
+                    raise ValueError(err_msg % (REST_ADDRESSID, e.message))
+
+                requested_address = self.address_data.get_data(addr_id=address_id)
+                if requested_address is None:
+                    msg = 'Requested address %s for route is not registered.' % address_id
+                    raise CommandFailure(msg=msg)
+
         if address is None:
             msg = 'Gateway=%s\'s address is not registered.' % gateway
             raise CommandFailure(msg=msg)
@@ -754,7 +793,7 @@ class VlanRouter(object):
             raise CommandFailure(msg=msg)
         else:
             src_ip = address.default_gw
-            route = self.routing_tbl.add(destination, gateway)
+            route = self.policy_routing_tbl.add(destination, gateway, requested_address)
             self._set_route_packetin(route)
             self.send_arp_request(src_ip, dst_ip)
             return route.route_id
@@ -776,7 +815,9 @@ class VlanRouter(object):
                                      dl_type=ether.ETH_TYPE_IP,
                                      dl_vlan=self.vlan_id,
                                      dst_ip=route.dst_ip,
-                                     dst_mask=route.netmask)
+                                     dst_mask=route.dst_netmask,
+                                     src_ip=route.src_ip,
+                                     src_mask=route.src_netmask)
         self.logger.info('Set %s (packet in) flow [cookie=0x%x]', log_msg,
                          cookie, extra=self.sw_id)
 
@@ -887,7 +928,7 @@ class VlanRouter(object):
             self.ofctl.delete_flow(flow_stats)
             route_id = VlanRouter._cookie_to_id(REST_ROUTEID,
                                                 flow_stats.cookie)
-            self.routing_tbl.delete(route_id)
+            self.policy_routing_tbl.delete(route_id)
             if route_id not in delete_ids:
                 delete_ids.append(route_id)
 
@@ -908,7 +949,7 @@ class VlanRouter(object):
     def _chk_addr_relation_route(self, address_id):
         # Check exist of related routing data.
         relate_list = []
-        gateways = self.routing_tbl.get_gateways()
+        gateways = self.policy_routing_tbl.get_gateways()
         for gateway in gateways:
             address = self.address_data.get_data(ip=gateway)
             if address is not None:
@@ -1079,7 +1120,7 @@ class VlanRouter(object):
             self.logger.info(log_msg, srcip, dstip, extra=self.sw_id)
             src_ip = address.default_gw
         else:
-            route = self.routing_tbl.get_data(dst_ip=dst_ip)
+            route = self.policy_routing_tbl.get_data(dst_ip=dst_ip, src_ip=srcip)
             if route is not None:
                 log_msg = 'Receive IP packet from [%s] to [%s].'
                 self.logger.info(log_msg, srcip, dstip, extra=self.sw_id)
@@ -1110,7 +1151,7 @@ class VlanRouter(object):
                              extra=self.sw_id)
 
     def send_arp_all_gw(self):
-        gateways = self.routing_tbl.get_gateways()
+        gateways = self.policy_routing_tbl.get_gateways()
         for gateway in gateways:
             address = self.address_data.get_data(ip=gateway)
             self.send_arp_request(address.default_gw, gateway)
@@ -1154,26 +1195,29 @@ class VlanRouter(object):
         src_ip = header_list[ARP].src_ip
 
         gateway_flg = False
-        for key, value in self.routing_tbl.items():
-            if value.gateway_ip == src_ip:
-                gateway_flg = True
-                if value.gateway_mac == src_mac:
-                    continue
-                self.routing_tbl[key].gateway_mac = src_mac
+        for table in self.policy_routing_tbl.values():
+            for key, value in table.items():
+                if value.gateway_ip == src_ip:
+                    gateway_flg = True
+                    if value.gateway_mac == src_mac:
+                        continue
+                    table[key].gateway_mac = src_mac
 
-                cookie = self._id_to_cookie(REST_ROUTEID, value.route_id)
-                priority, log_msg = self._get_priority(PRIORITY_TYPE_ROUTE,
-                                                       route=value)
-                # VJO - dec_ttl needs to be set to False - Cisco doesn't know what to do with it.
-                self.ofctl.set_routing_flow(cookie, priority, out_port,
-                                            dl_vlan=self.vlan_id,
-                                            src_mac=dst_mac,
-                                            dst_mac=src_mac,
-                                            nw_dst=value.dst_ip,
-                                            dst_mask=value.netmask,
-                                            dec_ttl=False)
-                self.logger.info('Set %s flow [cookie=0x%x]', log_msg, cookie,
-                                 extra=self.sw_id)
+                    cookie = self._id_to_cookie(REST_ROUTEID, value.route_id)
+                    priority, log_msg = self._get_priority(PRIORITY_TYPE_ROUTE,
+                                                           route=value)
+                    # VJO - dec_ttl needs to be set to False - Cisco doesn't know what to do with it.
+                    self.ofctl.set_routing_flow(cookie, priority, out_port,
+                                                dl_vlan=self.vlan_id,
+                                                src_mac=dst_mac,
+                                                dst_mac=src_mac,
+                                                nw_src=value.src_ip,
+                                                src_mask=value.src_netmask,
+                                                nw_dst=value.dst_ip,
+                                                dst_mask=value.dst_netmask,
+                                                dec_ttl=False)
+                    self.logger.info('Set %s flow [cookie=0x%x]', log_msg, cookie,
+                                     extra=self.sw_id)
         return gateway_flg
 
     def _learning_host_mac(self, msg, header_list):
@@ -1183,7 +1227,7 @@ class VlanRouter(object):
         dst_mac = self.port_data[out_port].mac
         src_ip = header_list[ARP].src_ip
 
-        gateways = self.routing_tbl.get_gateways()
+        gateways = self.policy_routing_tbl.get_gateways()
         if src_ip not in gateways:
             address = self.address_data.get_data(ip=src_ip)
             if address is not None:
@@ -1214,7 +1258,7 @@ class VlanRouter(object):
         if address is not None:
             return address.default_gw
         else:
-            route = self.routing_tbl.get_data(gw_mac=src_mac)
+            route = self.policy_routing_tbl.get_data(gw_mac=src_mac, src_ip=src_ip)
             if route is not None:
                 address = self.address_data.get_data(ip=route.gateway_ip)
                 if address is not None:
@@ -1304,44 +1348,103 @@ class Address(object):
         return bool(ipv4_apply_mask(ip, self.netmask) == self.nw_addr)
 
 
-class RoutingTable(dict):
+class PolicyRoutingTable(dict):
     def __init__(self):
-        super(RoutingTable, self).__init__()
+        super(PolicyRoutingTable, self).__init__()
+        self[INADDR_ANY] = RoutingTable()
         self.route_id = 1
 
-    def add(self, dst_nw_addr, gateway_ip):
+    def add(self, dst_nw_addr, gateway_ip, src_address=None):
+        err_msg = 'Invalid [%s] value.'
+        added_route = None
+        key = INADDR_ANY
+
+        if src_address is not None:
+            ip_str = ip_addr_ntoa(src_address.nw_addr)
+            key = '%s/%d' % (ip_str, src_address.netmask)
+
+        if key not in self:
+            self.add_table(key, src_address)
+
+        table = self[key]
+        added_route = table.add(dst_nw_addr, gateway_ip, self.route_id)
+
+        if added_route is not None:
+            self.route_id += 1
+            self.route_id &= UINT32_MAX
+            if self.route_id == COOKIE_DEFAULT_ID:
+                self.route_id = 1
+
+        return added_route
+
+    def delete(self, route_id):
+        for table in self.values():
+            table.delete(route_id)
+        return
+
+    def add_table(self, key, address):
+        self[key] = RoutingTable(address)
+        return self[key]
+
+    def delete_table(self, src_address):
+        # FIXME: Implement to achieve deletion of an unused RoutingTable
+        pass
+
+    def get_gateways(self):
+        gateways = []
+        for table in self.values():
+            gateways += table.get_gateways()
+        return gateways
+
+    def get_data(self, gw_mac=None, dst_ip=None, src_ip=None):
+        desired_table = self[INADDR_ANY]
+
+        if src_ip is not None:
+            for table in self.values():
+                if table.src_address is not None:
+                     if (table.src_address.nw_addr == ipv4_apply_mask(src_ip, table.src_address.netmask)):
+                         desired_table = table
+                         break
+
+        route = desired_table.get_data(gw_mac, dst_ip)
+
+        if ((route is None) and (desired_table != self[INADDR_ANY])):
+            route = self[INADDR_ANY].get_data(gw_mac, dst_ip)
+
+        return route
+
+
+class RoutingTable(dict):
+    def __init__(self, address=None):
+        super(RoutingTable, self).__init__()
+        self.src_address = address
+
+    def add(self, dst_nw_addr, gateway_ip, route_id):
         err_msg = 'Invalid [%s] value.'
 
-        if dst_nw_addr == DEFAULT_ROUTE:
+        if dst_nw_addr == INADDR_ANY:
             dst_ip = 0
-            netmask = 0
+            dst_netmask = 0
         else:
-            dst_ip, netmask, dummy = nw_addr_aton(
+            dst_ip, dst_netmask, dst_dummy = nw_addr_aton(
                 dst_nw_addr, err_msg=err_msg % REST_DESTINATION)
 
         gateway_ip = ip_addr_aton(gateway_ip, err_msg=err_msg % REST_GATEWAY)
 
+        dst_ip_str = ip_addr_ntoa(dst_ip)
+        key = '%s/%d' % (dst_ip_str, dst_netmask)
+
         # Check overlaps
         overlap_route = None
-        if dst_nw_addr == DEFAULT_ROUTE:
-            if DEFAULT_ROUTE in self:
-                overlap_route = self[DEFAULT_ROUTE].route_id
-        elif dst_nw_addr in self:
-            overlap_route = self[dst_nw_addr].route_id
+        if key in self:
+            overlap_route = self[key].route_id
 
         if overlap_route is not None:
             msg = 'Destination overlaps [route_id=%d]' % overlap_route
             raise CommandFailure(msg=msg)
 
-        routing_data = Route(self.route_id, dst_ip, netmask, gateway_ip)
-        ip_str = ip_addr_ntoa(dst_ip)
-        key = '%s/%d' % (ip_str, netmask)
+        routing_data = Route(route_id, dst_ip, dst_netmask, gateway_ip, self.src_address)
         self[key] = routing_data
-
-        self.route_id += 1
-        self.route_id &= UINT32_MAX
-        if self.route_id == COOKIE_DEFAULT_ID:
-            self.route_id = 1
 
         return routing_data
 
@@ -1354,6 +1457,7 @@ class RoutingTable(dict):
     def get_gateways(self):
         return [routing_data.gateway_ip for routing_data in self.values()]
 
+    #def get_data(self, gw_mac=None, dst_ip=None, src_ip=None):
     def get_data(self, gw_mac=None, dst_ip=None):
         if gw_mac is not None:
             for route in self.values():
@@ -1365,27 +1469,33 @@ class RoutingTable(dict):
             get_route = None
             mask = 0
             for route in self.values():
-                if ipv4_apply_mask(dst_ip, route.netmask) == route.dst_ip:
+                if ipv4_apply_mask(dst_ip, route.dst_netmask) == route.dst_ip:
                     # For longest match
-                    if mask < route.netmask:
+                    if mask < route.dst_netmask:
                         get_route = route
-                        mask = route.netmask
+                        mask = route.dst_netmask
 
             if get_route is None:
-                get_route = self.get(DEFAULT_ROUTE, None)
+                get_route = self.get(INADDR_ANY, None)
             return get_route
         else:
             return None
 
 
 class Route(object):
-    def __init__(self, route_id, dst_ip, netmask, gateway_ip):
+    def __init__(self, route_id, dst_ip, dst_netmask, gateway_ip, src_address=None):
         super(Route, self).__init__()
         self.route_id = route_id
         self.dst_ip = dst_ip
-        self.netmask = netmask
+        self.dst_netmask = dst_netmask
         self.gateway_ip = gateway_ip
         self.gateway_mac = None
+        if src_address is None:
+            self.src_ip = 0
+            self.src_netmask = 32
+        else:
+            self.src_ip = src_address.nw_addr
+            self.src_netmask = src_address.netmask
 
 
 class SuspendPacketList(list):
@@ -1565,13 +1675,13 @@ class OfCtl(object):
         #self.logger.debug('Packet out = %s', data_str, extra=self.sw_id)
 
     def set_packetin_flow(self, cookie, priority, dl_type=0, dl_dst=0,
-                          dl_vlan=0, dst_ip=0, dst_mask=32, nw_proto=0):
+                          dl_vlan=0, dst_ip=0, dst_mask=32, src_ip=0, src_mask=32, nw_proto=0):
         miss_send_len = UINT16_MAX
         actions = [self.dp.ofproto_parser.OFPActionOutput(
             self.dp.ofproto.OFPP_CONTROLLER, miss_send_len)]
         self.set_flow(cookie, priority, dl_type=dl_type, dl_dst=dl_dst,
                       dl_vlan=dl_vlan, nw_dst=dst_ip, dst_mask=dst_mask,
-                      nw_proto=nw_proto, actions=actions)
+                      nw_src=src_ip, src_mask=src_mask, nw_proto=nw_proto, actions=actions)
 
     def send_stats_request(self, stats, waiters):
         self.dp.set_xid(stats)
