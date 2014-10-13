@@ -514,7 +514,6 @@ class Router(dict):
         return self[vlan_id]
 
     def _del_vlan_router(self, vlan_id, waiters):
-        # FIXME: Someone *really* needs to have this return success or failure, and and error message as to *why*
         # Remove unnecessary VlanRouter.
         if vlan_id == VLANID_NONE:
             return
