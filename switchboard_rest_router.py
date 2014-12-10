@@ -115,11 +115,11 @@ ICMP = icmp.icmp.__name__
 TCP = tcp.tcp.__name__
 UDP = udp.udp.__name__
 
-MAX_SUSPENDPACKETS = 50  # Threshold of the packet suspends thread count.
+MAX_SUSPENDPACKETS = 3  # Maximum number of suspended packets awaiting send.
 
 ARP_REPLY_TIMER = 2  # sec
 OFP_REPLY_TIMER = 1.0  # sec
-CHK_ROUTING_TBL_INTERVAL = 1800  # sec
+CHK_ROUTING_TBL_INTERVAL = 120  # Seconds before cyclically checking reachability of all switch-defined routers
 
 SWITCHID_PATTERN = dpid_lib.DPID_PATTERN + r'|all'
 VLANID_PATTERN = r'[0-9]{1,4}|all'
@@ -133,7 +133,7 @@ COOKIE_SHIFT_VLANID = 32
 COOKIE_SHIFT_ROUTEID = 16
 
 INADDR_ANY = '0.0.0.0/0'
-IDLE_TIMEOUT = 1800  # sec
+IDLE_TIMEOUT = 300  # sec
 DEFAULT_TTL = 64
 
 REST_COMMAND_RESULT = 'command_result'
@@ -577,7 +577,11 @@ class Router(dict):
                 REST_COMMAND_RESULT: msgs}
 
     def packet_in_handler(self, msg):
-        pkt = packet.Packet(msg.data)
+        pkt = None
+        try:
+            pkt = packet.Packet(msg.data)
+        except:
+            return None 
         #TODO: Packet library convert to string
         #self.logger.debug('Packet in = %s', str(pkt), self.sw_id)
         header_list = dict((p.protocol_name, p)
