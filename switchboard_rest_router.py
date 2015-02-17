@@ -27,7 +27,7 @@ from ryu.base import app_manager
 from ryu.controller import dpset
 from ryu.controller import ofp_event
 from ryu.controller.handler import set_ev_cls
-from ryu.controller.handler import MAIN_DISPATCHER
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.exception import OFPUnknownVersion
 from ryu.exception import RyuException
 from ryu.lib import dpid as dpid_lib
@@ -276,6 +276,11 @@ class RestRouterAPI(app_manager.RyuApp):
             RouterController.register_router(ev.dp)
         else:
             RouterController.unregister_router(ev.dp)
+
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        datapath = ev.msg.datapath
+        datapath.n_tables = ev.msg.n_tables
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -1873,6 +1878,13 @@ class OfCtl_after_v1_2(OfCtl):
                 table_id = 1
             elif dl_type == ether.ETH_TYPE_ARP:
                 match.set_arp_opcode(nw_proto)
+
+        # FIXME: We're working around the fact that our Aristas have 1 hardware table, and our
+        # Ciscos have 2, in OF 1.3 mode.
+        # Right now, we check the number of tables we matched to the datapath.
+        # What *should* we be doing? Checking table features, and being more clever.
+        if self.dp.n_tables == 1:
+            table_id = 0
 
         # Instructions
         actions = actions or []
