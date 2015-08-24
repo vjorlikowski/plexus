@@ -988,9 +988,10 @@ class VlanRouter(object):
     def _chk_addr_relation_route(self, address_id):
         # Check exist of related routing data.
         relate_list = []
-        gateways = self.policy_routing_tbl.get_gateways()
+        gateways = self.policy_routing_tbl.get_all_gateway_info()
         for gateway in gateways:
-            address = self.address_data.get_data(ip=gateway)
+            gateway_ip, gateway_mac = gateway
+            address = self.address_data.get_data(ip=gateway_ip)
             if address is not None:
                 if (address_id == REST_ALL
                         and address.address_id not in relate_list):
@@ -1022,6 +1023,9 @@ class VlanRouter(object):
                     if header_list[ICMP].type == icmp.ICMP_ECHO_REQUEST:
                         self._packetin_icmp_req(msg, header_list)
                         return
+                    elif header_list[ICMP].type == icmp.ICMP_ECHO_REPLY:
+                        self._packetin_icmp_reply(msg, header_list)
+                        return
                 elif TCP in header_list or UDP in header_list:
                     self._packetin_tcp_udp(msg, header_list)
                     return
@@ -1032,17 +1036,19 @@ class VlanRouter(object):
 
     def _packetin_arp(self, msg, header_list):
         src_addr = self.address_data.get_data(ip=header_list[ARP].src_ip)
+        self.logger.info('Handling incoming ARP from [%s] to [%s].',
+                         ip_addr_ntoa(header_list[ARP].src_ip),
+                         ip_addr_ntoa(header_list[ARP].dst_ip))
         if src_addr is None:
             self.logger.info('No gateway defined for subnet; not handling ARP')
             return
 
-        # case: Receive ARP from the gateway
-        #  Update routing table.
-        # case: Receive ARP from an internal host
-        #  Learning host MAC.
-        gw_flg = self._update_routing_tbls(msg, header_list)
-        if gw_flg is False:
-            self._learning_host_mac(msg, header_list)
+        # Housekeeping tasks, associated with seeing an ARP.
+        # 1) Update the routing tables.
+        # 2) Learn the MAC of the host.
+        # FIXME: what happens here, if someone is ARP spoofing?!?
+        self._update_routing_tbls(msg, header_list)
+        self._learning_host_mac(msg, header_list)
 
         # ARP packet handling.
         in_port = self.ofctl.get_packetin_inport(msg)
@@ -1054,6 +1060,8 @@ class VlanRouter(object):
 
         if src_ip == dst_ip:
             # GARP -> ALL
+            # FIXME: Verify that the sender of the GARP is allowed to do so...
+            # That said - in the MAC spoofing case - the grat ARP is *not* a problem.
             output = self.ofctl.dp.ofproto.OFPP_ALL
             self.ofctl.send_packet_out(in_port, output, msg.data)
 
@@ -1064,7 +1072,7 @@ class VlanRouter(object):
             dst_addr = self.address_data.get_data(ip=dst_ip)
             if (dst_addr is not None and
                     src_addr.address_id == dst_addr.address_id):
-                # ARP from internal host -> ALL
+                # ARP from internal host -> ALL (in the same address range, which must be defined)
                 output = self.ofctl.dp.ofproto.OFPP_ALL
                 self.ofctl.send_packet_out(in_port, output, msg.data)
 
@@ -1085,7 +1093,7 @@ class VlanRouter(object):
 
                 log_msg = 'Receive ARP request from [%s] to router port [%s].'
                 self.logger.info(log_msg, srcip, dstip)
-                self.logger.info('Send ARP reply to [%s]', srcip)
+                self.logger.info('Send ARP reply to [%s] on port [%s]', srcip, output)
 
             elif header_list[ARP].opcode == arp.ARP_REPLY:
                 #  ARP reply to router port -> suspend packets forward
@@ -1120,30 +1128,43 @@ class VlanRouter(object):
         self.logger.info(log_msg, srcip, dstip)
         self.logger.info('Send ICMP echo reply to [%s].', srcip)
 
+    def _packetin_icmp_reply(self, msg, header_list):
+        # Deal with ICMP echo reply; primarily used for DHCP.
+        in_port = self.ofctl.get_packetin_inport(msg)
+
+        srcip = ip_addr_ntoa(header_list[IPV4].src)
+        dstip = ip_addr_ntoa(header_list[IPV4].dst)
+        log_msg = 'XXX Received ICMP echo reply from [%s] to router port [%s].'
+        self.logger.info(log_msg, srcip, dstip)
+
     def _packetin_tcp_udp(self, msg, header_list):
-        # Send ICMP port unreach error.
+        # Log the receipt of the packet...
+        srcip = ip_addr_ntoa(header_list[IPV4].src)
+        dstip = ip_addr_ntoa(header_list[IPV4].dst)
+        self.logger.info('Received TCP/UDP from [%s] to router port [%s].', srcip, dstip)
+
+        # ...and then send an ICMP port unreachable.
         in_port = self.ofctl.get_packetin_inport(msg)
         self.ofctl.send_icmp(in_port, header_list, self.vlan_id,
                              icmp.ICMP_DEST_UNREACH,
                              icmp.ICMP_PORT_UNREACH_CODE,
                              msg_data=msg.data)
-
-        srcip = ip_addr_ntoa(header_list[IPV4].src)
-        dstip = ip_addr_ntoa(header_list[IPV4].dst)
-        self.logger.info('Receive TCP/UDP from [%s] to router port [%s].', srcip, dstip)
-        self.logger.info('Send ICMP destination unreachable to [%s].', srcip)
+        self.logger.info('Sent ICMP destination unreachable to [%s] in response to TCP/UDP packet to router port [%s].', srcip, dstip)
 
     def _packetin_to_node(self, msg, header_list):
         if len(self.packet_buffer) >= MAX_SUSPENDPACKETS:
             self.logger.info('Packet is dropped, MAX_SUSPENDPACKETS exceeded.')
             return
 
+        # Log the receipt of the packet
+        srcip = ip_addr_ntoa(header_list[IPV4].src)
+        dstip = ip_addr_ntoa(header_list[IPV4].dst)
+        self.logger.info('Received TCP/UDP from [%s] destined for [%s].', srcip, dstip)
+        
         # Send ARP request to get node MAC address.
         in_port = self.ofctl.get_packetin_inport(msg)
         src_ip = None
         dst_ip = header_list[IPV4].dst
-        srcip = ip_addr_ntoa(header_list[IPV4].src)
-        dstip = ip_addr_ntoa(dst_ip)
 
         address = self.address_data.get_data(ip=dst_ip)
         if address is not None:
@@ -1163,7 +1184,9 @@ class VlanRouter(object):
         if src_ip is not None:
             self.packet_buffer.add(in_port, header_list, msg.data)
             self.send_arp_request(src_ip, dst_ip, in_port=in_port)
-            self.logger.info('Send ARP request (flood)')
+            self.logger.info('Send ARP request (flood) on behalf of [%s] asking who-has [%s]', srcip, dstip)
+        else:
+            self.logger.info('Could not find a viable path to destination [%s] for source [%s]', dstip, srcip)
 
     def _packetin_invalid_ttl(self, msg, header_list):
         # Send ICMP TTL error.
@@ -1180,10 +1203,11 @@ class VlanRouter(object):
             self.logger.info('Send ICMP time exceeded to [%s].', srcip)
 
     def send_arp_all_gw(self):
-        gateways = self.policy_routing_tbl.get_gateways()
+        gateways = self.policy_routing_tbl.get_all_gateway_info()
         for gateway in gateways:
-            address = self.address_data.get_data(ip=gateway)
-            self.send_arp_request(address.default_gw, gateway)
+            gateway_ip, gateway_mac = gateway
+            address = self.address_data.get_data(ip=gateway_ip)
+            self.send_arp_request(address.default_gw, gateway_ip)
 
     def send_arp_request(self, src_ip, dst_ip, in_port=None):
         # Send ARP request from all ports.
@@ -1216,6 +1240,9 @@ class VlanRouter(object):
             self.logger.info('Send ICMP destination unreachable to [%s].', dstip)
 
     def _update_routing_tbls(self, msg, header_list):
+        # FIXME:
+        # Need to have a way to wait a certain amount of time, to ensure that there has not been a race to MAC/ARP poison the rule table.
+
         # Set flow: routing to gateway.
         out_port = self.ofctl.get_packetin_inport(msg)
         src_mac = header_list[ARP].src_mac
@@ -1249,26 +1276,28 @@ class VlanRouter(object):
         return gateway_flg
 
     def _learning_host_mac(self, msg, header_list):
+        # FIXME:
+        # 1) Make sure we don't learn the MAC of the "default gateway" (as defined by the controller for the switch).
+        # 2) Need to have a way to wait a certain amount of time, to ensure that there has not been a race to MAC/ARP poison the rule table.
+
         # Set flow: routing to internal Host.
         out_port = self.ofctl.get_packetin_inport(msg)
         src_mac = header_list[ARP].src_mac
         dst_mac = self.port_data[out_port].mac
         src_ip = header_list[ARP].src_ip
 
-        gateways = self.policy_routing_tbl.get_gateways()
-        if src_ip not in gateways:
-            address = self.address_data.get_data(ip=src_ip)
-            if address is not None:
-                cookie = self._id_to_cookie(REST_ADDRESSID, address.address_id)
-                priority = self._get_priority(PRIORITY_IMPLICIT_ROUTING)
-                # VJO - dec_ttl needs to be set to False - Cisco doesn't know what to do with it.
-                self.ofctl.set_routing_flow(cookie, priority,
-                                            out_port, dl_vlan=self.vlan_id,
-                                            src_mac=dst_mac, dst_mac=src_mac,
-                                            nw_dst=src_ip,
-                                            idle_timeout=IDLE_TIMEOUT,
-                                            dec_ttl=False)
-                self.logger.info('Set implicit routing flow [cookie=0x%x]', cookie)
+        address = self.address_data.get_data(ip=src_ip)
+        if address is not None:
+            cookie = self._id_to_cookie(REST_ADDRESSID, address.address_id)
+            priority = self._get_priority(PRIORITY_IMPLICIT_ROUTING)
+            # VJO - dec_ttl needs to be set to False - Cisco doesn't know what to do with it.
+            self.ofctl.set_routing_flow(cookie, priority,
+                                        out_port, dl_vlan=self.vlan_id,
+                                        src_mac=dst_mac, dst_mac=src_mac,
+                                        nw_dst=src_ip,
+                                        idle_timeout=IDLE_TIMEOUT,
+                                        dec_ttl=False)
+            self.logger.info('Set implicit routing flow [cookie=0x%x]', cookie)
 
     def _get_send_port_ip(self, header_list):
         try:
@@ -1419,11 +1448,11 @@ class PolicyRoutingTable(dict):
                     del self[key]
         return
 
-    def get_gateways(self):
-        gateways = []
+    def get_all_gateway_info(self):
+        all_gateway_info = []
         for table in self.values():
-            gateways += table.get_gateways()
-        return gateways
+            all_gateway_info += table.get_all_gateway_info()
+        return all_gateway_info
 
     def get_data(self, gw_mac=None, dst_ip=None, src_ip=None):
         desired_table = self[INADDR_ANY]
@@ -1483,8 +1512,12 @@ class RoutingTable(dict):
                 del self[key]
                 return
 
-    def get_gateways(self):
-        return [routing_data.gateway_ip for routing_data in self.values()]
+    def get_all_gateway_info(self):
+        all_gateway_info = []
+        for route in self.values():
+            gateway_info = (route.gateway_ip, route.gateway_mac)
+            all_gateway_info.append(gateway_info)
+        return all_gateway_info
 
     def get_data(self, gw_mac=None, dst_ip=None):
         if gw_mac is not None:
@@ -1639,7 +1672,7 @@ class OfCtl(object):
         self.send_packet_out(in_port, output, pkt.data, data_str=str(pkt))
 
     def send_icmp(self, in_port, protocol_list, vlan_id, icmp_type,
-                  icmp_code, icmp_data=None, msg_data=None, src_ip=None):
+                  icmp_code, icmp_data=None, msg_data=None, src_ip=None, out_port=None):
         # Generate ICMP reply packet
         csum = 0
         offset = ethernet.ethernet._MIN_LEN
@@ -1689,8 +1722,11 @@ class OfCtl(object):
         pkt.add_protocol(ic)
         pkt.serialize()
 
+        if out_port is None:
+            out_port = self.dp.ofproto.OFPP_IN_PORT
+
         # Send packet out
-        self.send_packet_out(in_port, self.dp.ofproto.OFPP_IN_PORT,
+        self.send_packet_out(in_port, out_port,
                              pkt.data, data_str=str(pkt))
 
     def send_packet_out(self, in_port, output, data, data_str=None):
@@ -1760,6 +1796,7 @@ class OfCtl_v1_0(OfCtl):
 
     def set_flow(self, cookie, priority, dl_type=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
+                 src_port=0, dst_port=0,
                  nw_proto=0, idle_timeout=0, actions=None):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
@@ -1783,12 +1820,16 @@ class OfCtl_v1_0(OfCtl):
                 ~ofp.OFPFW_NW_DST_MASK
             wildcards &= v
             nw_dst = ipv4_text_to_int(nw_dst)
+        if src_port:
+            wildcards &= ~ofp.OFPFW_TP_SRC
+        if dst_port:
+            wildcards &= ~ofp.OFPFW_TP_DST
         if nw_proto:
             wildcards &= ~ofp.OFPFW_NW_PROTO
 
         match = ofp_parser.OFPMatch(wildcards, 0, 0, dl_dst, dl_vlan, 0,
                                     dl_type, 0, nw_proto,
-                                    nw_src, nw_dst, 0, 0)
+                                    nw_src, nw_dst, src_port, dst_port)
         actions = actions or []
 
         m = ofp_parser.OFPFlowMod(self.dp, match, cookie, cmd,
@@ -1798,7 +1839,8 @@ class OfCtl_v1_0(OfCtl):
 
     def set_routing_flow(self, cookie, priority, outport, dl_vlan=0,
                          nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
-                         src_mac=0, dst_mac=0, idle_timeout=0, **dummy):
+                         src_port=0, dst_port=0, src_mac=0, dst_mac=0,
+                         idle_timeout=0, **dummy):
         ofp_parser = self.dp.ofproto_parser
 
         dl_type = ether.ETH_TYPE_IP
@@ -1817,6 +1859,7 @@ class OfCtl_v1_0(OfCtl):
         self.set_flow(cookie, priority, dl_type=dl_type, dl_vlan=dl_vlan,
                       nw_src=nw_src, src_mask=src_mask,
                       nw_dst=nw_dst, dst_mask=dst_mask,
+                      src_port=src_port, dst_port=dst_port,
                       idle_timeout=idle_timeout, actions=actions)
 
     def delete_flow(self, flow_stats):
@@ -1861,6 +1904,7 @@ class OfCtl_after_v1_2(OfCtl):
 
     def set_flow(self, cookie, priority, dl_type=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
+                 src_port=0, dst_port=0,
                  nw_proto=0, idle_timeout=0, actions=None):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
@@ -1891,6 +1935,16 @@ class OfCtl_after_v1_2(OfCtl):
             if dl_type == ether.ETH_TYPE_IP:
                 match.set_ip_proto(nw_proto)
                 table_id = 1
+                if src_port:
+                    if nw_proto == in_proto.IPPROTO_TCP:
+                        match.set_tcp_src(src_port)
+                    elif nw_proto == in_proto.IPPROTO_UDP:
+                        match.set_udp_src(src_port)
+                if dst_port:
+                    if nw_proto == in_proto.IPPROTO_TCP:
+                        match.set_tcp_dst(dst_port)
+                    elif nw_proto == in_proto.IPPROTO_UDP:
+                        match.set_udp_dst(dst_port)
             elif dl_type == ether.ETH_TYPE_ARP:
                 match.set_arp_opcode(nw_proto)
 
@@ -1913,7 +1967,8 @@ class OfCtl_after_v1_2(OfCtl):
 
     def set_routing_flow(self, cookie, priority, outport, dl_vlan=0,
                          nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
-                         src_mac=0, dst_mac=0, idle_timeout=0, dec_ttl=False):
+                         src_port=0, dst_port=0, src_mac=0, dst_mac=0,
+                         idle_timeout=0, dec_ttl=False):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
 
@@ -1932,6 +1987,7 @@ class OfCtl_after_v1_2(OfCtl):
         self.set_flow(cookie, priority, dl_type=dl_type, dl_vlan=dl_vlan,
                       nw_src=nw_src, src_mask=src_mask,
                       nw_dst=nw_dst, dst_mask=dst_mask,
+                      src_port=src_port, dst_port=dst_port,
                       idle_timeout=idle_timeout, actions=actions)
 
     def delete_flow(self, flow_stats):
