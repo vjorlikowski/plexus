@@ -132,7 +132,7 @@ rm -rf %{buildroot}
 %pre
 getent group %{name} >/dev/null || groupadd -r %{name}
 getent passwd %{name} >/dev/null || \
-    useradd -r -g %{name} -d i%{_localstatedir}/lib/%{name} -s /sbin/nologin \
+    useradd -r -g %{name} -d %{_localstatedir}/lib/%{name} -s /sbin/nologin \
     -c "plexus OpenFlow controller user" %{name}
 exit 0
 
