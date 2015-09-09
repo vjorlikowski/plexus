@@ -100,6 +100,7 @@ cp -R %{_builddir}%{venv_dir} %{buildroot}%{venv_base_dir}
 %{__install} -m 644 plexus.service %{buildroot}%{_unitdir}/plexus.service
 %else
 %{__mkdir} -p %{buildroot}%{_initrddir}
+mkdir -p %{buildroot}%{_localstatedir}/run/%{name}
 %{__install} -m 755 redhat/plexus.init %{buildroot}%{_initrddir}/plexus
 %endif
 
@@ -127,6 +128,7 @@ rm -rf %{buildroot}
 %if %{use_systemd}
 %{_unitdir}/plexus.service
 %else
+%attr(755, %{plexus_user_id}, %{plexus_group_id}) %dir %{_localstatedir}/run/%{name}
 %{_initrddir}/plexus
 %endif
 

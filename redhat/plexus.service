@@ -4,6 +4,8 @@ After=network.target
 
 [Service]
 Type=forking
+ExecStartPre=-/usr/bin/mkdir /var/run/plexus
+ExecStartPre=/usr/bin/chown -R openflow:nobody /var/run/plexus
 ExecStart=/opt/plexus/bin/supervisord -c /etc/plexus/supervisord.conf
 ExecReload=/opt/plexus/bin/supervisorctl -c /etc/plexus/supervisord.conf reload
 ExecStop=/opt/plexus/bin/supervisorctl -c /etc/plexus/supervisord.conf shutdown
