@@ -40,7 +40,7 @@ Plexus is a Ryu OpenFlow controller application.
 It was originally designed to interact closely with the Switchboard SDN knowledgebase application developed at Duke.
 
 %prep
-%setup -q
+%setup -q -n %{name}-%{commit}
 
 %build
 if [ -d %{_builddir}%{venv_dir} ]; then
