@@ -25,7 +25,7 @@ LOCKFILE=/var/lock/subsys/${NAME}
 
 start() {
     echo -n $"Starting $NAME: "
-    ${BASEDIR}/supervisord -c ${CONFDIR}/supervisord.conf && success || failure
+    (${BASEDIR}/supervisord -c ${CONFDIR}/supervisord.conf 2>/dev/null) && success || failure
     RETVAL=$?
     echo
     [ $RETVAL -eq 0 ] && touch ${LOCKFILE}
@@ -47,14 +47,12 @@ restart() {
 }
 
 status() {
-    ${BASEDIR}/supervisorctl -c ${CONFDIR}/supervisord.conf status | grep -q -v "no such file"
-    RETVAL=$?
-    if [ $RETVAL -eq 0 ]; then
+    if [ -f ${LOCKFILE} ]; then
         ${BASEDIR}/supervisorctl -c ${CONFDIR}/supervisord.conf status
-        RETVAL=$?
     else
         echo "${NAME} not running."
     fi
+    RETVAL=$?
 }
 
 case "$1" in
@@ -68,7 +66,7 @@ case "$1" in
     restart
     ;;
   condrestart)
-    [ -f /var/lock/subsys/plexus ] && restart
+    [ -f ${LOCKFILE} ] && restart
     ;;
   status)
     status
