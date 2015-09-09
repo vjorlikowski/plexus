@@ -17,7 +17,7 @@ default_log_directory =  '/var/log/' + package_name
 setup(name = package_name,
       version = __version__,
       packages = [package_name],
-      data_files = [(default_conf_directory, ['config/ryu.conf', 'config/log.conf']),
+      data_files = [(default_conf_directory, ['sample_configuration/ryu.conf', 'sample_configuration/log.conf']),
                     (default_state_directory, []),
                     (default_log_directory, [])]
 )
