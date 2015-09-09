@@ -1,10 +1,6 @@
 %global commit @@COMMIT@@
 %global shortcommit @@SHORTCOMMIT@@
 
-# The next two lines are Duke-specific.
-%define plexus_user_id openflow
-%define plexus_group_id nobody
-
 %if ! (0%{?fedora} > 12 || 0%{?rhel} > 5)
 %{!?python_sitearch: %global python_sitearch %(%{__python} -c "from distutils.sysconfig import get_python_lib; print get_python_lib(1)")}
 %endif
@@ -21,7 +17,8 @@ URL:       https://gitlab.oit.duke.edu/vjo/plexus
 Source:    %{name}-%{commit}.tgz
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
 
-BuildRequires: python-virtualenv python-pip python-setuptools gcc libxslt-devel
+BuildRequires: python python-virtualenv python-pip python-setuptools gcc libxslt-devel
+Requires(pre): shadow-utils
 
 %if %{use_systemd}
 BuildRequires: systemd
@@ -117,8 +114,8 @@ rm -rf %{buildroot}
 %files
 %defattr(-, root, root, -)
 %attr(755, root, root) %dir %{_sysconfdir}/%{name}
-%attr(755, %{plexus_user_id}, %{plexus_group_id}) %dir %{_localstatedir}/lib/%{name}
-%attr(755, %{plexus_user_id}, %{plexus_group_id}) %dir %{_localstatedir}/log/%{name}
+%attr(755, %{name}, %{name}) %dir %{_localstatedir}/lib/%{name}
+%attr(755, %{name}, %{name}) %dir %{_localstatedir}/log/%{name}
 %config(noreplace) %{_sysconfdir}/%{name}/ryu.conf
 %config(noreplace) %{_sysconfdir}/%{name}/log.conf
 %config(noreplace) %{_sysconfdir}/%{name}/supervisord.conf
@@ -128,9 +125,16 @@ rm -rf %{buildroot}
 %if %{use_systemd}
 %{_unitdir}/plexus.service
 %else
-%attr(755, %{plexus_user_id}, %{plexus_group_id}) %dir %{_localstatedir}/run/%{name}
+%attr(755, %{name}, %{name}) %dir %{_localstatedir}/run/%{name}
 %{_initrddir}/plexus
 %endif
+
+%pre
+getent group %{name} >/dev/null || groupadd -r %{name}
+getent passwd %{name} >/dev/null || \
+    useradd -r -g %{name} -d i%{_localstatedir}/lib/%{name} -s /sbin/nologin \
+    -c "plexus OpenFlow controller user" %{name}
+exit 0
 
 %post
 if [ "$1" = "1" ]; then
