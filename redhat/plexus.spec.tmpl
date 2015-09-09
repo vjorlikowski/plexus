@@ -120,6 +120,7 @@ rm -rf %{buildroot}
 %attr(755, %{plexus_user_id}, %{plexus_group_id}) %dir %{_localstatedir}/log/%{name}
 %config(noreplace) %{_sysconfdir}/%{name}/ryu.conf
 %config(noreplace) %{_sysconfdir}/%{name}/log.conf
+%config(noreplace) %{_sysconfdir}/%{name}/supervisord.conf
 %{venv_dir}
 %exclude %{venv_dir}/lib/python2.6/*.pyc
 %verify(not md5 size mtime) %{venv_dir}/lib/python2.6/*.pyc
