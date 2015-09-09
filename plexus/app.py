@@ -665,8 +665,8 @@ class VlanRouter(object):
         self.bare = bare
 
         # Set flow: default route (drop), if VLAN is not "bare"
-        #if not self.bare:
-        #    self._set_defaultroute_drop()
+        if not self.bare:
+            self._set_defaultroute_drop()
 
     def delete(self, waiters):
         # Delete flow.
