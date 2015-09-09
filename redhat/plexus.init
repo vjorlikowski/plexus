@@ -1,0 +1,75 @@
+#!/bin/bash
+#
+# plexus        Runs the Ryu application "plexus" via supervisord
+#
+# chkconfig:	- 95 04
+#
+# description:  plexus is a Ryu controller application, providing a wide variety of
+#               software-defined networking functionality.
+#
+
+# source function library
+. /etc/rc.d/init.d/functions
+
+RETVAL=0
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+DESC="plexus SDN controller application"
+NAME=plexus
+BASEDIR=/opt/${NAME}/bin
+CONFDIR=/etc/${NAME}
+LOCKFILE=/var/lock/subsys/${NAME}
+
+# pull in sysconfig settings
+[ -f /etc/sysconfig/${NAME} ] && . /etc/sysconfig/${NAME}
+
+start() {
+	echo -n $"Starting $NAME: "
+    ${BASEDIR}/supervisord -c ${CONFDIR}/supervisord.conf && success || failure
+	RETVAL=$?
+	echo
+    [ $RETVAL -eq 0 ] && touch ${LOCKFILE}
+}
+
+stop() {
+	echo -n $"Stopping plexus: "
+	${BASEDIR}/supervisorctl -c ${CONFDIR}/supervisord.conf shutdown && success || failure
+	RETVAL=$?
+	echo
+    [ $RETVAL -eq 0 ] && rm -f ${LOCKFILE}
+}
+
+restart() {
+	echo -n $"Restarting plexus: "
+	${BASEDIR}/supervisorctl -c ${CONFDIR}/supervisord.conf reload && success || failure
+	RETVAL=$?
+	echo
+}
+
+status() {
+	${BASEDIR}/supervisorctl -c ${CONFDIR}/supervisord.conf status
+	RETVAL=$?
+}
+
+case "$1" in
+  start)
+	start
+	;;
+  stop) 
+	stop
+	;;
+  restart|force-reload|reload)
+	restart
+	;;
+  condrestart)
+	[ -f /var/lock/subsys/plexus ] && restart
+	;;
+  status)
+    status
+	;;
+  *)
+	echo $"Usage: $0 {start|stop|status|restart|reload|force-reload|condrestart}"
+	exit 1
+esac
+
+exit $RETVAL

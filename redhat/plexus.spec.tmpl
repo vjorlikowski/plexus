@@ -1,0 +1,152 @@
+%global commit @@COMMIT@@
+%global shortcommit @@SHORTCOMMIT@@
+
+%if ! (0%{?fedora} > 12 || 0%{?rhel} > 5)
+%{!?python_sitearch: %global python_sitearch %(%{__python} -c "from distutils.sysconfig import get_python_lib; print get_python_lib(1)")}
+%endif
+%define use_systemd (0%{?fedora} && 0%{?fedora} >= 18) || (0%{?rhel} && 0%{?rhel} >= 7) || (0%{?suse_version} && 0%{?suse_version} >=1210)
+
+Name:      plexus
+Version:   0.1
+Release:   @@DATE@@git%{shortcommit}
+Summary:   plexus is a Ryu controller application, providing a wide variety of software-defined networking functionality.
+
+Group:     Applications/System
+License:   BSD
+URL:       https://gitlab.oit.duke.edu/vjo/plexus
+Source:    %{name}-%{commit}.tgz
+BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
+
+BuildRequires: python-virtualenv python-pip python-setuptools gcc libxslt-devel
+
+%if %{use_systemd}
+BuildRequires: systemd
+Requires: systemd
+%else
+Requires:           initscripts
+Requires(postun):   initscripts
+Requires(post):     chkconfig
+Requires(preun):    chkconfig
+%endif
+
+%define venv_base_dir /opt
+%define venv_dir %{venv_base_dir}/%{name}
+
+# Disable debuginfo packaging...
+%global debug_package %{nil}
+
+%description
+Plexus is a Ryu OpenFlow controller application.
+It was originally designed to interact closely with the Switchboard SDN knowledgebase application developed at Duke.
+
+%prep
+%setup -q
+
+%build
+if [ -d %{_builddir}%{venv_dir} ]; then
+    echo "Cleaning out stale build directory" 1>&2
+    rm -rf %{_builddir}%{venv_dir}
+fi
+mkdir -p %{_builddir}%{venv_dir}
+virtualenv %{_builddir}%{venv_dir}
+
+# Install dependencies and application support.
+%{_builddir}%{venv_dir}/bin/pip install cffi==1.2.1
+%{_builddir}%{venv_dir}/bin/pip install pyOpenSSL==0.15.1
+%{_builddir}%{venv_dir}/bin/pip install paramiko==1.15.2
+%{_builddir}%{venv_dir}/bin/pip install urllib3==1.11
+%{_builddir}%{venv_dir}/bin/pip install requests==2.7.0
+%{_builddir}%{venv_dir}/bin/pip install ndg-httpsclient==0.4.0
+%{_builddir}%{venv_dir}/bin/pip install lxml==3.4.4
+%{_builddir}%{venv_dir}/bin/pip install supervisor==3.1.3 --pre
+
+# Sigh.
+# More dependencies, but these are badly specified and we have to work around conflicts.
+%{_builddir}%{venv_dir}/bin/pip install pbr==1.6.0
+%{_builddir}%{venv_dir}/bin/pip install oslo.config==2.3.0
+%{_builddir}%{venv_dir}/bin/pip install pbr==0.10.8
+
+# Finally, install Ryu.
+%{_builddir}%{venv_dir}/bin/pip install ryu==3.24
+
+# Now, to move things into place.
+mkdir -p %{_builddir}%{venv_dir}
+
+%{_builddir}%{venv_dir}/bin/python setup.py build
+%{_builddir}%{venv_dir}/bin/python setup.py install_lib
+# And make the virtualenv relocatable.
+virtualenv --relocatable %{_builddir}%{venv_dir}
+echo "FIXING virtualenv PATHS"
+find -H %{_builddir}%{venv_dir}/bin -type f | while read filename;
+do
+     perl -p -i.bak -e "s|%{_builddir}||g" ${filename}
+     if [ -f ${filename}.bak ]; then
+        rm -f ${filename}.bak
+        echo "FIXED ${filename}"
+     fi
+done
+
+%install
+mkdir -p %{buildroot}%{venv_base_dir}
+cp -R %{_builddir}%{venv_dir} %{buildroot}%{venv_base_dir}
+%{buildroot}%{venv_dir}/bin/python setup.py install_data --root %{buildroot}
+
+%if %{use_systemd}
+%{__mkdir} -p %{buildroot}%{_unitdir}
+%{__install} -m 644 plexus.service %{buildroot}%{_unitdir}/plexus.service
+%else
+%{__mkdir} -p %{buildroot}%{_initrddir}
+%{__install} -m 755 redhat/plexus.init %{buildroot}%{_initrddir}/plexus
+%endif
+
+# Correct the virtualenv lib64 symlink to what it will point to on a real install:
+rm %{buildroot}%{venv_dir}/lib64
+ln -s %{venv_dir}/lib %{buildroot}%{venv_dir}/lib64
+
+# This avoids prelink & RPM helpfully breaking the package signatures:
+/usr/sbin/prelink -u %{buildroot}%{venv_dir}/bin/python
+
+%clean
+rm -rf %{buildroot}
+
+%files
+%defattr(-,root,root,-)
+%attr(755, root, root) %dir %{_sysconfdir}/%{name}
+%attr(755, root, root) %dir %{_localstatedir}/lib/%{name}
+%attr(755, root, root) %dir %{_localstatedir}/log/%{name}
+%config(noreplace) %{_sysconfdir}/%{name}/ryu.conf
+%config(noreplace) %{_sysconfdir}/%{name}/log.conf
+%{venv_dir}
+%exclude %{venv_dir}/lib/python2.6/*.pyc
+%verify(not md5 size mtime) %{venv_dir}/lib/python2.6/*.pyc
+%if %{use_systemd}
+%{_unitdir}/plexus.service
+%else
+%{_initrddir}/plexus
+%endif
+
+%post
+if [ "$1" = "1" ]; then
+%if %use_systemd
+    /usr/bin/systemctl enable plexus.service >/dev/null 2>&1 ||:
+%else
+    /sbin/chkconfig --add plexus >/dev/null 2>&1 ||:
+%endif
+fi
+
+%preun
+if [ "$1" = "0" ]; then
+%if %use_systemd
+    /usr/bin/systemctl --no-reload disable plexus.service >/dev/null 2>&1 || :
+    /usr/bin/systemctl stop plexus.service >/dev/null 2>&1 ||:
+%else
+    /sbin/service plexus stop > /dev/null 2>&1
+    /sbin/chkconfig --del plexus >/dev/null 2>&1 ||:
+%endif
+/bin/rm -rf /var/lib/plexus/*
+/bin/rm -rf /var/log/plexus/*
+fi
+
+%changelog
+* Tue Sep 08 2015 Victor J. Orlikowski <vjo@duke.edu> - 0.1-1
+- 0.1 Initial packaging as an RPM.

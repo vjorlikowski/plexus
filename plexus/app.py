@@ -88,6 +88,8 @@ from ryu.ofproto import ofproto_v1_3
 #    parameter = {"destination": "A.B.C.D/M", "gateway": "E.F.G.H", "address_id": "<int>"}
 #  case2-4: set default route for a specific address range.
 #    parameter = {"gateway": "E.F.G.H", "address_id": "<int>"}
+#  case3: set DHCP server for a VLAN
+#    parameter = {"dhcp_servers": [ "A.B.C.D", "E.F.G.H" ]}
 #
 #
 ## 3. delete address data or routing data.
@@ -136,6 +138,8 @@ COOKIE_SHIFT_VLANID = 32
 COOKIE_SHIFT_ROUTEID = 16
 
 INADDR_ANY = '0.0.0.0/0'
+#INADDR_BROADCAST = '255.255.255.255/32'
+INADDR_BROADCAST = '255.255.255.255'
 IDLE_TIMEOUT = 300  # sec
 DEFAULT_TTL = 64
 
@@ -157,6 +161,7 @@ REST_GATEWAY = 'gateway'
 REST_GATEWAY_MAC = 'gateway_mac'
 REST_SOURCE = 'source'
 REST_BARE = 'bare'
+REST_DHCP = 'dhcp_servers'
 
 PRIORITY_VLAN_SHIFT = 1000
 PRIORITY_NETMASK_SHIFT = 32
@@ -660,8 +665,8 @@ class VlanRouter(object):
         self.bare = bare
 
         # Set flow: default route (drop), if VLAN is not "bare"
-        if not self.bare:
-            self._set_defaultroute_drop()
+        #if not self.bare:
+        #    self._set_defaultroute_drop()
 
     def delete(self, waiters):
         # Delete flow.
@@ -767,6 +772,10 @@ class VlanRouter(object):
 
                 route_id = self._set_routing_data(destination, gateway, address_id)
                 details = 'Add route [route_id=%d]' % route_id
+            elif REST_DHCP in data:
+                dhcp_servers = data[REST_DHCP]
+                self._set_dhcp_data(dhcp_servers, update_records=True)
+                details = 'DHCP server(s) set as %r' % dhcp_servers
 
         except CommandFailure as err_msg:
             msg = {REST_RESULT: REST_NG, REST_DETAILS: str(err_msg)}
@@ -838,6 +847,83 @@ class VlanRouter(object):
             self._set_route_packetin(route)
             self.send_arp_request(src_ip, dst_ip)
             return route.route_id
+
+    def _set_dhcp_data(self, dhcp_server_list, update_records=False):
+        # OK - we've received a list of DHCP servers here.
+        # We should now check to see if at least one is reachable.
+        # We should, at least semi-regularly, update them.
+        # This should be a rule with a short-lived idle time.
+        # Actually - how about this:
+        # For each IP in the list we receive:
+        # - Check that it's a valid IP
+        # - Check that it's one that we should be able to reach via (via a bypass or production route with a gateway).
+        # - Append the IP to the list of dhcp servers for the policy routing table for this VLAN
+        # - Send an ICMP ping to the IP.
+        # We can then, as a periodic task, run _set_dhcp_data on the routing table,
+        # which will result in a population of the switch rules, via the ICMP response handler.
+        # This means that this method will need another parameter, that says whether to update the list of DHCP servers or not.
+        # The ICMP response handler will check to see if the response is from one of the DHCP servers,
+        # and will send an update to the switches. 
+
+        # Check to see that IPs submitted as DHCP servers are valid.
+        # FIXME: create a DHCPServer object, that has the IP address of the DHCP server, as well as whether it has been verified or not.
+        err_msg = 'Invalid [%s] value.' % REST_DHCP
+        for server in dhcp_server_list:
+            self.logger.info('XXX Testing DHCP IP [%s]', server)
+            ip_addr_aton(server, err_msg=err_msg)
+
+        # OK - now that we're sure all of the servers in the list have valid IP addresses, set the records.
+        self.policy_routing_tbl.dhcp_servers = dhcp_server_list
+
+        # Next, loop over the list one more time; this time, check how best to ping each server in the list,
+        # then do so.
+        for server in self.policy_routing_tbl.dhcp_servers:
+            pass # FIXME
+
+        # OK - this is broken, for now.
+        # What I need to do: figure out *a* port, *any port* that leads to the production network,
+        # or, to a network that contains the subnet of the DHCP servers (if they are locally attached), and ping out those ports.
+        #production_route = self.policy_routing_tbl.get_data(dst_ip=ip_addr_aton("0.0.0.0"))
+        #if production_route is not None:
+        #    dst_ip = production_route.gateway_ip
+        #    dst_mac = production_route.gateway_mac
+        #    self.logger.info('XXX Found production gateway at IP [%s], MAC [%s]', dst_ip, dst_mac)
+        #    address = self.address_data.get_data(ip=dst_ip)
+        #    src_ip = address.default_gw
+        #    self.logger.info('XXX Will use source IP [%s]', src_ip)
+        #else:
+        #    self.logger.info('XXX Unable to find production gateway in tables')
+        #    return
+
+        # FIXME: we need to get the "default gateway" from the address data.
+        # OK - we now know where the gateways are.
+        # Now - we need to look at the DHCP server IP, and see if it is an "internal host" - meaning, it's in a subnet we know about.
+        # If it is? The DHCP server *may* be directly attached to the switch.
+        # That means that we need to send our probe out all of the ports on the switch, so that we can try to find the DHCP server.
+        # If the DHCP server is *not* in a subnet we know about? We should try sending a probe out the known gateway ports, bound for the DHCP server.
+        
+        # Basically? We need to send an ICMP from the "IP of the switch" to the production gateway serving the subnet to which the switch belongs, or, if the DHCP server is in a subnet the switch knows about, flood it out...
+        # And really? We don't need to be doing ICMP; we *should* be doing DHCP (and abusing the protocol slightly to do what is wanted)
+        gateways = self.policy_routing_tbl.get_all_gateway_info()
+        for gateway in gateways:
+            gateway_ip, gateway_mac = gateway
+            address = self.address_data.get_data(ip=gateway_ip)
+            if gateway_mac is not None and address is not None:
+                src_ip = address.default_gw
+                for send_port in self.port_data.values():
+                    src_mac = send_port.mac
+                    out_port = send_port.port_no
+                    header_list = dict()
+                    header_list[ETHERNET] = ethernet.ethernet(src_mac, gateway_mac, ether.ETH_TYPE_IP)
+                    for server in dhcp_server_list:
+                        header_list[IPV4] = ipv4.ipv4(src=server, dst=src_ip)
+                        data = icmp.echo()
+                        self.ofctl.send_icmp(out_port, header_list, self.vlan_id,
+                                             icmp.ICMP_ECHO_REQUEST,
+                                             0,
+                                             icmp_data=data, out_port=out_port)
+            else:
+                self.logger.info('Unable to find path to gateway [%s] while attempting to verify DHCP server [%s]', gateway_ip, server)
 
     def _set_defaultroute_drop(self):
         cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
@@ -1060,7 +1146,8 @@ class VlanRouter(object):
 
         if src_ip == dst_ip:
             # GARP -> ALL
-            # FIXME: Verify that the sender of the GARP is allowed to do so...
+            # FIXME: Is there anything that can be done to mitigate a malicious GARP?
+            # Answer: check proteus before sending it - but that only works if someone isn't MAC spoofing too...
             # That said - in the MAC spoofing case - the grat ARP is *not* a problem.
             output = self.ofctl.dp.ofproto.OFPP_ALL
             self.ofctl.send_packet_out(in_port, output, msg.data)
@@ -1408,6 +1495,7 @@ class PolicyRoutingTable(dict):
         super(PolicyRoutingTable, self).__init__()
         self[INADDR_ANY] = RoutingTable()
         self.route_id = 1
+        self.dhcp_servers = []
 
     def add(self, dst_nw_addr, gateway_ip, src_address=None):
         err_msg = 'Invalid [%s] value.'
