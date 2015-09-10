@@ -665,8 +665,8 @@ class VlanRouter(object):
         self.bare = bare
 
         # Set flow: default route (drop), if VLAN is not "bare"
-        if not self.bare:
-            self._set_defaultroute_drop()
+        #if not self.bare:
+        #    self._set_defaultroute_drop()
 
     def delete(self, waiters):
         # Delete flow.
@@ -869,7 +869,7 @@ class VlanRouter(object):
         # FIXME: create a DHCPServer object, that has the IP address of the DHCP server, as well as whether it has been verified or not.
         err_msg = 'Invalid [%s] value.' % REST_DHCP
         for server in dhcp_server_list:
-            self.logger.info('XXX Testing DHCP IP [%s]', server)
+            self.logger.info('Testing DHCP IP [%s]', server)
             ip_addr_aton(server, err_msg=err_msg)
 
         # OK - now that we're sure all of the servers in the list have valid IP addresses, set the records.
@@ -887,12 +887,12 @@ class VlanRouter(object):
         #if production_route is not None:
         #    dst_ip = production_route.gateway_ip
         #    dst_mac = production_route.gateway_mac
-        #    self.logger.info('XXX Found production gateway at IP [%s], MAC [%s]', dst_ip, dst_mac)
+        #    self.logger.info('Found production gateway at IP [%s], MAC [%s]', dst_ip, dst_mac)
         #    address = self.address_data.get_data(ip=dst_ip)
         #    src_ip = address.default_gw
-        #    self.logger.info('XXX Will use source IP [%s]', src_ip)
+        #    self.logger.info('Will use source IP [%s]', src_ip)
         #else:
-        #    self.logger.info('XXX Unable to find production gateway in tables')
+        #    self.logger.info('Unable to find production gateway in tables')
         #    return
 
         # FIXME: we need to get the "default gateway" from the address data.
@@ -1152,7 +1152,7 @@ class VlanRouter(object):
             output = self.ofctl.dp.ofproto.OFPP_ALL
             self.ofctl.send_packet_out(in_port, output, msg.data)
 
-            self.logger.info('Receive GARP from [%s].', srcip)
+            self.logger.info('Received GARP from [%s].', srcip)
             self.logger.info('Sending GARP (flood)')
 
         elif dst_ip not in rt_ports:
@@ -1163,7 +1163,7 @@ class VlanRouter(object):
                 output = self.ofctl.dp.ofproto.OFPP_ALL
                 self.ofctl.send_packet_out(in_port, output, msg.data)
 
-                self.logger.info('Receive ARP from an internal host [%s].', srcip)
+                self.logger.info('Received ARP from an internal host [%s].', srcip)
                 self.logger.info('Sending ARP (flood)')
         else:
             if header_list[ARP].opcode == arp.ARP_REQUEST:
@@ -1178,13 +1178,13 @@ class VlanRouter(object):
                                     dst_mac, src_mac, dst_ip, src_ip,
                                     arp_target_mac, in_port, output)
 
-                log_msg = 'Receive ARP request from [%s] to router port [%s].'
+                log_msg = 'Received ARP request from [%s] to router port [%s].'
                 self.logger.info(log_msg, srcip, dstip)
                 self.logger.info('Send ARP reply to [%s] on port [%s]', srcip, output)
 
             elif header_list[ARP].opcode == arp.ARP_REPLY:
                 #  ARP reply to router port -> suspend packets forward
-                log_msg = 'Receive ARP reply from [%s] to router port [%s].'
+                log_msg = 'Received ARP reply from [%s] to router port [%s].'
                 self.logger.info(log_msg, srcip, dstip)
 
                 packet_list = self.packet_buffer.get_data(src_ip)
@@ -1211,7 +1211,7 @@ class VlanRouter(object):
 
         srcip = ip_addr_ntoa(header_list[IPV4].src)
         dstip = ip_addr_ntoa(header_list[IPV4].dst)
-        log_msg = 'Receive ICMP echo request from [%s] to router port [%s].'
+        log_msg = 'Received ICMP echo request from [%s] to router port [%s].'
         self.logger.info(log_msg, srcip, dstip)
         self.logger.info('Send ICMP echo reply to [%s].', srcip)
 
@@ -1221,7 +1221,7 @@ class VlanRouter(object):
 
         srcip = ip_addr_ntoa(header_list[IPV4].src)
         dstip = ip_addr_ntoa(header_list[IPV4].dst)
-        log_msg = 'XXX Received ICMP echo reply from [%s] to router port [%s].'
+        log_msg = 'Received ICMP echo reply from [%s] to router port [%s].'
         self.logger.info(log_msg, srcip, dstip)
 
     def _packetin_tcp_udp(self, msg, header_list):
@@ -1255,13 +1255,13 @@ class VlanRouter(object):
 
         address = self.address_data.get_data(ip=dst_ip)
         if address is not None:
-            log_msg = 'Receive IP packet from [%s] to an internal host [%s].'
+            log_msg = 'Received IP packet from [%s] to an internal host [%s].'
             self.logger.info(log_msg, srcip, dstip)
             src_ip = address.default_gw
         else:
             route = self.policy_routing_tbl.get_data(dst_ip=dst_ip, src_ip=srcip)
             if route is not None:
-                log_msg = 'Receive IP packet from [%s] to [%s].'
+                log_msg = 'Received IP packet from [%s] to [%s].'
                 self.logger.info(log_msg, srcip, dstip)
                 gw_address = self.address_data.get_data(ip=route.gateway_ip)
                 if gw_address is not None:
@@ -1278,7 +1278,7 @@ class VlanRouter(object):
     def _packetin_invalid_ttl(self, msg, header_list):
         # Send ICMP TTL error.
         srcip = ip_addr_ntoa(header_list[IPV4].src)
-        self.logger.info('Receive invalid ttl packet from [%s].', srcip)
+        self.logger.info('Received invalid ttl packet from [%s].', srcip)
 
         in_port = self.ofctl.get_packetin_inport(msg)
         src_ip = self._get_send_port_ip(header_list)
@@ -1394,7 +1394,7 @@ class VlanRouter(object):
             else:
                 src_ip = header_list[ARP].src_ip
         except KeyError:
-            self.logger.debug('Receive unsupported packet.')
+            self.logger.debug('Received unsupported packet.')
             return None
 
         address = self.address_data.get_data(ip=src_ip)
@@ -1407,7 +1407,7 @@ class VlanRouter(object):
                 if address is not None:
                     return address.default_gw
 
-        self.logger.debug('Receive packet from unknown IP[%s].', ip_addr_ntoa(src_ip))
+        self.logger.debug('Received packet from unknown IP [%s].', ip_addr_ntoa(src_ip))
         return None
 
 
