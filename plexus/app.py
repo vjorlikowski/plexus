@@ -138,8 +138,6 @@ COOKIE_SHIFT_VLANID = 32
 COOKIE_SHIFT_ROUTEID = 16
 
 INADDR_ANY = '0.0.0.0/0'
-#INADDR_BROADCAST = '255.255.255.255/32'
-INADDR_BROADCAST = '255.255.255.255'
 IDLE_TIMEOUT = 300  # sec
 DEFAULT_TTL = 64
 
@@ -774,7 +772,7 @@ class VlanRouter(object):
                 details = 'Add route [route_id=%d]' % route_id
             elif REST_DHCP in data:
                 dhcp_servers = data[REST_DHCP]
-                self._set_dhcp_data(dhcp_servers, update_records=True)
+                # FIXME: Placeholder for DHCP implementation.
                 details = 'DHCP server(s) set as %r' % dhcp_servers
 
         except CommandFailure as err_msg:
@@ -847,83 +845,6 @@ class VlanRouter(object):
             self._set_route_packetin(route)
             self.send_arp_request(src_ip, dst_ip)
             return route.route_id
-
-    def _set_dhcp_data(self, dhcp_server_list, update_records=False):
-        # OK - we've received a list of DHCP servers here.
-        # We should now check to see if at least one is reachable.
-        # We should, at least semi-regularly, update them.
-        # This should be a rule with a short-lived idle time.
-        # Actually - how about this:
-        # For each IP in the list we receive:
-        # - Check that it's a valid IP
-        # - Check that it's one that we should be able to reach via (via a bypass or production route with a gateway).
-        # - Append the IP to the list of dhcp servers for the policy routing table for this VLAN
-        # - Send an ICMP ping to the IP.
-        # We can then, as a periodic task, run _set_dhcp_data on the routing table,
-        # which will result in a population of the switch rules, via the ICMP response handler.
-        # This means that this method will need another parameter, that says whether to update the list of DHCP servers or not.
-        # The ICMP response handler will check to see if the response is from one of the DHCP servers,
-        # and will send an update to the switches. 
-
-        # Check to see that IPs submitted as DHCP servers are valid.
-        # FIXME: create a DHCPServer object, that has the IP address of the DHCP server, as well as whether it has been verified or not.
-        err_msg = 'Invalid [%s] value.' % REST_DHCP
-        for server in dhcp_server_list:
-            self.logger.info('XXX Testing DHCP IP [%s]', server)
-            ip_addr_aton(server, err_msg=err_msg)
-
-        # OK - now that we're sure all of the servers in the list have valid IP addresses, set the records.
-        self.policy_routing_tbl.dhcp_servers = dhcp_server_list
-
-        # Next, loop over the list one more time; this time, check how best to ping each server in the list,
-        # then do so.
-        for server in self.policy_routing_tbl.dhcp_servers:
-            pass # FIXME
-
-        # OK - this is broken, for now.
-        # What I need to do: figure out *a* port, *any port* that leads to the production network,
-        # or, to a network that contains the subnet of the DHCP servers (if they are locally attached), and ping out those ports.
-        #production_route = self.policy_routing_tbl.get_data(dst_ip=ip_addr_aton("0.0.0.0"))
-        #if production_route is not None:
-        #    dst_ip = production_route.gateway_ip
-        #    dst_mac = production_route.gateway_mac
-        #    self.logger.info('XXX Found production gateway at IP [%s], MAC [%s]', dst_ip, dst_mac)
-        #    address = self.address_data.get_data(ip=dst_ip)
-        #    src_ip = address.default_gw
-        #    self.logger.info('XXX Will use source IP [%s]', src_ip)
-        #else:
-        #    self.logger.info('XXX Unable to find production gateway in tables')
-        #    return
-
-        # FIXME: we need to get the "default gateway" from the address data.
-        # OK - we now know where the gateways are.
-        # Now - we need to look at the DHCP server IP, and see if it is an "internal host" - meaning, it's in a subnet we know about.
-        # If it is? The DHCP server *may* be directly attached to the switch.
-        # That means that we need to send our probe out all of the ports on the switch, so that we can try to find the DHCP server.
-        # If the DHCP server is *not* in a subnet we know about? We should try sending a probe out the known gateway ports, bound for the DHCP server.
-        
-        # Basically? We need to send an ICMP from the "IP of the switch" to the production gateway serving the subnet to which the switch belongs, or, if the DHCP server is in a subnet the switch knows about, flood it out...
-        # And really? We don't need to be doing ICMP; we *should* be doing DHCP (and abusing the protocol slightly to do what is wanted)
-        gateways = self.policy_routing_tbl.get_all_gateway_info()
-        for gateway in gateways:
-            gateway_ip, gateway_mac = gateway
-            address = self.address_data.get_data(ip=gateway_ip)
-            if gateway_mac is not None and address is not None:
-                src_ip = address.default_gw
-                for send_port in self.port_data.values():
-                    src_mac = send_port.mac
-                    out_port = send_port.port_no
-                    header_list = dict()
-                    header_list[ETHERNET] = ethernet.ethernet(src_mac, gateway_mac, ether.ETH_TYPE_IP)
-                    for server in dhcp_server_list:
-                        header_list[IPV4] = ipv4.ipv4(src=server, dst=src_ip)
-                        data = icmp.echo()
-                        self.ofctl.send_icmp(out_port, header_list, self.vlan_id,
-                                             icmp.ICMP_ECHO_REQUEST,
-                                             0,
-                                             icmp_data=data, out_port=out_port)
-            else:
-                self.logger.info('Unable to find path to gateway [%s] while attempting to verify DHCP server [%s]', gateway_ip, server)
 
     def _set_defaultroute_drop(self):
         cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
@@ -1152,7 +1073,7 @@ class VlanRouter(object):
             output = self.ofctl.dp.ofproto.OFPP_ALL
             self.ofctl.send_packet_out(in_port, output, msg.data)
 
-            self.logger.info('Receive GARP from [%s].', srcip)
+            self.logger.info('Received GARP from [%s].', srcip)
             self.logger.info('Sending GARP (flood)')
 
         elif dst_ip not in rt_ports:
@@ -1163,7 +1084,7 @@ class VlanRouter(object):
                 output = self.ofctl.dp.ofproto.OFPP_ALL
                 self.ofctl.send_packet_out(in_port, output, msg.data)
 
-                self.logger.info('Receive ARP from an internal host [%s].', srcip)
+                self.logger.info('Received ARP from an internal host [%s].', srcip)
                 self.logger.info('Sending ARP (flood)')
         else:
             if header_list[ARP].opcode == arp.ARP_REQUEST:
@@ -1178,13 +1099,13 @@ class VlanRouter(object):
                                     dst_mac, src_mac, dst_ip, src_ip,
                                     arp_target_mac, in_port, output)
 
-                log_msg = 'Receive ARP request from [%s] to router port [%s].'
+                log_msg = 'Received ARP request from [%s] to router port [%s].'
                 self.logger.info(log_msg, srcip, dstip)
                 self.logger.info('Send ARP reply to [%s] on port [%s]', srcip, output)
 
             elif header_list[ARP].opcode == arp.ARP_REPLY:
                 #  ARP reply to router port -> suspend packets forward
-                log_msg = 'Receive ARP reply from [%s] to router port [%s].'
+                log_msg = 'Received ARP reply from [%s] to router port [%s].'
                 self.logger.info(log_msg, srcip, dstip)
 
                 packet_list = self.packet_buffer.get_data(src_ip)
@@ -1211,17 +1132,17 @@ class VlanRouter(object):
 
         srcip = ip_addr_ntoa(header_list[IPV4].src)
         dstip = ip_addr_ntoa(header_list[IPV4].dst)
-        log_msg = 'Receive ICMP echo request from [%s] to router port [%s].'
+        log_msg = 'Received ICMP echo request from [%s] to router port [%s].'
         self.logger.info(log_msg, srcip, dstip)
         self.logger.info('Send ICMP echo reply to [%s].', srcip)
 
     def _packetin_icmp_reply(self, msg, header_list):
-        # Deal with ICMP echo reply; primarily used for DHCP.
+        # Deal with ICMP echo reply; may be used for DHCP, etc.
         in_port = self.ofctl.get_packetin_inport(msg)
 
         srcip = ip_addr_ntoa(header_list[IPV4].src)
         dstip = ip_addr_ntoa(header_list[IPV4].dst)
-        log_msg = 'XXX Received ICMP echo reply from [%s] to router port [%s].'
+        log_msg = 'Received ICMP echo reply from [%s] to router port [%s].'
         self.logger.info(log_msg, srcip, dstip)
 
     def _packetin_tcp_udp(self, msg, header_list):
@@ -1255,13 +1176,13 @@ class VlanRouter(object):
 
         address = self.address_data.get_data(ip=dst_ip)
         if address is not None:
-            log_msg = 'Receive IP packet from [%s] to an internal host [%s].'
+            log_msg = 'Received IP packet from [%s] to an internal host [%s].'
             self.logger.info(log_msg, srcip, dstip)
             src_ip = address.default_gw
         else:
             route = self.policy_routing_tbl.get_data(dst_ip=dst_ip, src_ip=srcip)
             if route is not None:
-                log_msg = 'Receive IP packet from [%s] to [%s].'
+                log_msg = 'Received IP packet from [%s] to [%s].'
                 self.logger.info(log_msg, srcip, dstip)
                 gw_address = self.address_data.get_data(ip=route.gateway_ip)
                 if gw_address is not None:
@@ -1278,7 +1199,7 @@ class VlanRouter(object):
     def _packetin_invalid_ttl(self, msg, header_list):
         # Send ICMP TTL error.
         srcip = ip_addr_ntoa(header_list[IPV4].src)
-        self.logger.info('Receive invalid ttl packet from [%s].', srcip)
+        self.logger.info('Received invalid ttl packet from [%s].', srcip)
 
         in_port = self.ofctl.get_packetin_inport(msg)
         src_ip = self._get_send_port_ip(header_list)
@@ -1394,7 +1315,7 @@ class VlanRouter(object):
             else:
                 src_ip = header_list[ARP].src_ip
         except KeyError:
-            self.logger.debug('Receive unsupported packet.')
+            self.logger.debug('Received unsupported packet.')
             return None
 
         address = self.address_data.get_data(ip=src_ip)
@@ -1407,7 +1328,7 @@ class VlanRouter(object):
                 if address is not None:
                     return address.default_gw
 
-        self.logger.debug('Receive packet from unknown IP[%s].', ip_addr_ntoa(src_ip))
+        self.logger.debug('Received packet from unknown IP [%s].', ip_addr_ntoa(src_ip))
         return None
 
 
