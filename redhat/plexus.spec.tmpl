@@ -1,3 +1,4 @@
+%global builddate @@DATE@@
 %global commit @@COMMIT@@
 %global shortcommit @@SHORTCOMMIT@@
 
@@ -8,7 +9,7 @@
 
 Name:      plexus
 Version:   0.1
-Release:   @@DATE@@git%{shortcommit}%{?dist}
+Release:   %{builddate}git%{shortcommit}%{?dist}
 Summary:   plexus is a Ryu controller application, providing a wide variety of software-defined networking functionality.
 
 Group:     Applications/System
