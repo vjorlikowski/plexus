@@ -241,7 +241,7 @@ class CommandFailure(RyuException):
     pass
 
 
-class RestRouterAPI(app_manager.RyuApp):
+class Plexus(app_manager.RyuApp):
 
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION,
                     ofproto_v1_2.OFP_VERSION,
@@ -251,45 +251,45 @@ class RestRouterAPI(app_manager.RyuApp):
                  'wsgi': WSGIApplication}
 
     def __init__(self, *args, **kwargs):
-        super(RestRouterAPI, self).__init__(*args, **kwargs)
+        super(Plexus, self).__init__(*args, **kwargs)
 
         # logger configure
-        RouterController.set_logger(self.logger)
+        PlexusController.set_logger(self.logger)
 
         wsgi = kwargs['wsgi']
         self.waiters = {}
         self.data = {'waiters': self.waiters}
 
         mapper = wsgi.mapper
-        wsgi.registory['RouterController'] = self.data
+        wsgi.registory['PlexusController'] = self.data
         requirements = {'switch_id': SWITCHID_PATTERN,
                         'vlan_id': VLANID_PATTERN}
 
         # For no vlan data
         path = '/router/{switch_id}'
-        mapper.connect('router', path, controller=RouterController,
+        mapper.connect('router', path, controller=PlexusController,
                        requirements=requirements,
                        action='get_data',
                        conditions=dict(method=['GET']))
-        mapper.connect('router', path, controller=RouterController,
+        mapper.connect('router', path, controller=PlexusController,
                        requirements=requirements,
                        action='set_data',
                        conditions=dict(method=['POST']))
-        mapper.connect('router', path, controller=RouterController,
+        mapper.connect('router', path, controller=PlexusController,
                        requirements=requirements,
                        action='delete_data',
                        conditions=dict(method=['DELETE']))
         # For vlan data
         path = '/router/{switch_id}/{vlan_id}'
-        mapper.connect('router', path, controller=RouterController,
+        mapper.connect('router', path, controller=PlexusController,
                        requirements=requirements,
                        action='get_vlan_data',
                        conditions=dict(method=['GET']))
-        mapper.connect('router', path, controller=RouterController,
+        mapper.connect('router', path, controller=PlexusController,
                        requirements=requirements,
                        action='set_vlan_data',
                        conditions=dict(method=['POST']))
-        mapper.connect('router', path, controller=RouterController,
+        mapper.connect('router', path, controller=PlexusController,
                        requirements=requirements,
                        action='delete_vlan_data',
                        conditions=dict(method=['DELETE']))
@@ -297,9 +297,9 @@ class RestRouterAPI(app_manager.RyuApp):
     @set_ev_cls(dpset.EventDP, dpset.DPSET_EV_DISPATCHER)
     def datapath_handler(self, ev):
         if ev.enter:
-            RouterController.register_router(ev.dp)
+            PlexusController.register_router(ev.dp)
         else:
-            RouterController.unregister_router(ev.dp)
+            PlexusController.unregister_router(ev.dp)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -308,7 +308,7 @@ class RestRouterAPI(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
-        RouterController.packet_in_handler(ev.msg)
+        PlexusController.packet_in_handler(ev.msg)
 
     def _stats_reply_handler(self, ev):
         msg = ev.msg
@@ -372,13 +372,13 @@ class RouterLoggerAdapter(logging.LoggerAdapter):
         return '[DPID %16s] %s' % (self.extra['sw_id'], msg), kwargs
 
 
-class RouterController(ControllerBase):
+class PlexusController(ControllerBase):
 
     _ROUTER_LIST = {}
     _LOGGER = None
 
     def __init__(self, req, link, data, **config):
-        super(RouterController, self).__init__(req, link, data, **config)
+        super(PlexusController, self).__init__(req, link, data, **config)
         self.waiters = data['waiters']
 
     @classmethod
