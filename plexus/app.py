@@ -15,6 +15,8 @@
 
 
 import logging
+import warnings
+
 import socket
 import struct
 
@@ -492,6 +494,11 @@ class Router(dict):
         self.sw_id = {'sw_id': self.dpid_str}
         self.logger = logger
 
+        # FIXME: Can silence warning about using ports here.
+        # Probably not the right fix though.
+        #with warnings.catch_warnings():
+        #    warnings.simplefilter('ignore')
+        #    self.port_data = PortData(dp.ports)
         self.port_data = PortData(dp.ports)
 
         ofctl = OfCtl.factory(dp, logger)
