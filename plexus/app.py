@@ -792,7 +792,7 @@ class VlanRouter(object):
                 details = 'Add route [route_id=%d]' % route_id
             elif REST_DHCP in data:
                 dhcp_servers = data[REST_DHCP]
-                # FIXME: Placeholder for DHCP implementation.
+                self._set_dhcp_data(dhcp_servers, update_records=True)
                 details = 'DHCP server(s) set as %r' % dhcp_servers
 
         except CommandFailure as err_msg:
@@ -1236,7 +1236,7 @@ class VlanRouter(object):
         self.logger.info('Send ICMP echo reply to [%s].', srcip)
 
     def _packetin_icmp_reply(self, msg, header_list):
-        # Deal with ICMP echo reply; may be used for DHCP, etc.
+        # Deal with ICMP echo reply; primarily used for DHCP.
         in_port = self.ofctl.get_packetin_inport(msg)
 
         srcip = ip_addr_ntoa(header_list[IPV4].src)
