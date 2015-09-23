@@ -40,8 +40,10 @@ from ryu.lib import hub
 from ryu.lib import mac as mac_lib
 from ryu.lib import addrconv
 from ryu.lib.packet import arp
+from ryu.lib.packet import dhcp
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import icmp
+from ryu.lib.packet import in_proto
 from ryu.lib.packet import ipv4
 from ryu.lib.packet import packet
 from ryu.lib.packet import tcp
@@ -121,6 +123,7 @@ ARP = arp.arp.__name__
 ICMP = icmp.icmp.__name__
 TCP = tcp.tcp.__name__
 UDP = udp.udp.__name__
+DHCP = dhcp.dhcp.__name__
 
 MAX_SUSPENDPACKETS = 3  # Maximum number of suspended packets awaiting send.
 
@@ -135,13 +138,21 @@ VLANID_NONE = 0
 VLANID_MIN = 2
 VLANID_MAX = 4094
 
+DHCP_SERVER_PORT = 67
+DHCP_CLIENT_PORT = 68
+
 COOKIE_DEFAULT_ID = 0
 COOKIE_SHIFT_VLANID = 32
 COOKIE_SHIFT_ROUTEID = 16
 
-INADDR_ANY = '0.0.0.0/0'
-#INADDR_BROADCAST = '255.255.255.255/32'
-INADDR_BROADCAST = '255.255.255.255'
+INADDR_ANY_BASE = '0.0.0.0'
+INADDR_ANY_MASK = '0'
+INADDR_ANY = INADDR_ANY_BASE + '/' + INADDR_ANY_MASK
+
+INADDR_BROADCAST_BASE = '255.255.255.255'
+INADDR_BROADCAST_MASK = '32'
+INADDR_BROADCAST = INADDR_BROADCAST_BASE + '/' + INADDR_BROADCAST_MASK
+
 IDLE_TIMEOUT = 300  # sec
 DEFAULT_TTL = 64
 
@@ -672,8 +683,8 @@ class VlanRouter(object):
         self.bare = bare
 
         # Set flow: default route (drop), if VLAN is not "bare"
-        #if not self.bare:
-        #    self._set_defaultroute_drop()
+        if not self.bare:
+            self._set_defaultroute_drop()
 
     def delete(self, waiters):
         # Delete flow.
@@ -890,7 +901,7 @@ class VlanRouter(object):
         # OK - this is broken, for now.
         # What I need to do: figure out *a* port, *any port* that leads to the production network,
         # or, to a network that contains the subnet of the DHCP servers (if they are locally attached), and ping out those ports.
-        #production_route = self.policy_routing_tbl.get_data(dst_ip=ip_addr_aton("0.0.0.0"))
+        #production_route = self.policy_routing_tbl.get_data(dst_ip=ip_addr_aton(INADDR_ANY_BASE))
         #if production_route is not None:
         #    dst_ip = production_route.gateway_ip
         #    dst_mac = production_route.gateway_mac
@@ -923,12 +934,14 @@ class VlanRouter(object):
                     header_list = dict()
                     header_list[ETHERNET] = ethernet.ethernet(src_mac, gateway_mac, ether.ETH_TYPE_IP)
                     for server in dhcp_server_list:
-                        header_list[IPV4] = ipv4.ipv4(src=server, dst=src_ip)
-                        data = icmp.echo()
-                        self.ofctl.send_icmp(out_port, header_list, self.vlan_id,
-                                             icmp.ICMP_ECHO_REQUEST,
-                                             0,
-                                             icmp_data=data, out_port=out_port)
+                        #header_list[IPV4] = ipv4.ipv4(src=server, dst=src_ip)
+                        header_list[IPV4] = ipv4.ipv4(src=INADDR_BROADCAST_BASE, dst=INADDR_ANY_BASE)
+                        #data = icmp.echo()
+                        #self.ofctl.send_icmp(out_port, header_list, self.vlan_id,
+                        #                     icmp.ICMP_ECHO_REQUEST,
+                        #                     0,
+                        #                     icmp_data=data, out_port=out_port)
+                        self.ofctl.send_dhcp_discover(out_port, header_list, self.vlan_id, out_port=out_port)
             else:
                 self.logger.info('Unable to find path to gateway [%s] while attempting to verify DHCP server [%s]', gateway_ip, server)
 
@@ -1255,6 +1268,32 @@ class VlanRouter(object):
         dstip = ip_addr_ntoa(header_list[IPV4].dst)
         self.logger.info('Received TCP/UDP from [%s] destined for [%s].', srcip, dstip)
         
+        # Determine if this is a DHCP packet, and send it out.
+        # FIXME:
+        # Check to see if the packet is a DHCP OFFER.
+        # Check to see if IP address if one of the configured DHCP server addresses.
+        # If it is not, check that the IP address is that of the default gateway for the subnet (if such exists).
+        # Presuming the correct set of the above conditions is met, RARP for the requesting MAC from the DHCP header list.
+        # Upon finding the port on which the MAC lives, send out the DHCP OFFER.
+        if DHCP in header_list:
+            op_type = None
+            flood = False
+            dhcp_state = ord([opt for opt in header_list[DHCP].options.option_list if opt.tag == dhcp.DHCP_MESSAGE_TYPE_OPT][0].value)
+
+            if dhcp_state == dhcp.DHCP_OFFER:
+                op_type = "OFFER"
+            elif dhcp_state == dhcp.DHCP_ACK:
+                op_type = "ACK"
+
+            if op_type is not None:
+                flood = True
+
+            if ((header_list[DHCP].op == dhcp.DHCP_BOOT_REPLY) and flood):
+                self.logger.debug('Flooding received DHCP %s for MAC address [%s].', op_type, header_list[ETHERNET].dst)
+                in_port = self.ofctl.get_packetin_inport(msg)
+                output = self.ofctl.dp.ofproto.OFPP_ALL
+                self.ofctl.send_packet_out(in_port, output, msg.data)
+
         # Send ARP request to get node MAC address.
         in_port = self.ofctl.get_packetin_inport(msg)
         src_ip = None
@@ -1330,8 +1369,8 @@ class VlanRouter(object):
                                  msg_data=packet_buffer.data,
                                  src_ip=src_ip)
 
-            dstip = ip_addr_ntoa(packet_buffer.dst_ip)
-            self.logger.info('Send ICMP destination unreachable to [%s].', dstip)
+            dst_ip = ip_addr_ntoa(packet_buffer.dst_ip)
+            self.logger.info('Sent ICMP destination unreachable to [%s] regarding [%s].', src_ip, dst_ip)
 
     def _update_routing_tbls(self, msg, header_list):
         # FIXME:
@@ -1343,6 +1382,7 @@ class VlanRouter(object):
         dst_mac = self.port_data[out_port].mac
         src_ip = header_list[ARP].src_ip
 
+        default_route = self.policy_routing_tbl.get_data(dst_ip=INADDR_ANY_BASE, src_ip=src_ip)
         gateway_flg = False
         for table in self.policy_routing_tbl.values():
             for key, value in table.items():
@@ -1366,6 +1406,16 @@ class VlanRouter(object):
                                                 dst_mask=value.dst_netmask,
                                                 dec_ttl=False)
                     self.logger.info('Set %s flow [cookie=0x%x]', log_msg, cookie)
+                    if default_route is not None:
+                        if default_route.gateway_ip == value.gateway_ip:
+                            self.ofctl.set_routing_flow(cookie, priority, out_port,
+                                                        dl_vlan=self.vlan_id,
+                                                        nw_src=INADDR_ANY_BASE,
+                                                        nw_dst=INADDR_BROADCAST_BASE,
+                                                        nw_proto=in_proto.IPPROTO_UDP,
+                                                        src_port=DHCP_CLIENT_PORT,
+                                                        dst_port=DHCP_SERVER_PORT)
+                            self.logger.info('Set DHCP egress flow...')
 
         return gateway_flg
 
@@ -1766,6 +1816,54 @@ class OfCtl(object):
         # Send packet out
         self.send_packet_out(in_port, output, pkt.data, data_str=str(pkt))
 
+    def send_dhcp_discover(self, in_port, protocol_list, vlan_id, out_port=None):
+        # Generate DHCP discover packet
+        offset = ethernet.ethernet._MIN_LEN
+
+        if vlan_id != VLANID_NONE:
+            ether_proto = ether.ETH_TYPE_8021Q
+            pcp = 0
+            cfi = 0
+            vlan_ether = ether.ETH_TYPE_IP
+            v = vlan.vlan(pcp, cfi, vlan_id, vlan_ether)
+            offset += vlan.vlan._MIN_LEN
+        else:
+            ether_proto = ether.ETH_TYPE_IP
+
+        eth = protocol_list[ETHERNET]
+        e = ethernet.ethernet(eth.src, eth.dst, ether_proto)
+
+        ip = protocol_list[IPV4]
+        src_ip = ip.dst
+        i = ipv4.ipv4(dst=ip.src, src=src_ip, proto=inet.IPPROTO_UDP)
+
+        up = udp.udp(src_port=DHCP_CLIENT_PORT, dst_port=DHCP_SERVER_PORT)
+
+        op = dhcp.DHCP_BOOT_REQUEST
+        chaddr = eth.src
+        option_list = [dhcp.option(dhcp.DHCP_MESSAGE_TYPE_OPT, bytes(chr(dhcp.DHCP_REQUEST)), 1)]
+        # FIXME: magic cookie should be random
+        magic_cookie = '99.130.83.99'
+        options = dhcp.options(option_list=option_list, magic_cookie=magic_cookie)
+
+        dh = dhcp.dhcp(op=op, chaddr=chaddr, options=options)
+
+        pkt = packet.Packet()
+        pkt.add_protocol(e)
+        if vlan_id != VLANID_NONE:
+            pkt.add_protocol(v)
+        pkt.add_protocol(i)
+        pkt.add_protocol(up)
+        pkt.add_protocol(dh)
+        pkt.serialize()
+
+        if out_port is None:
+            out_port = self.dp.ofproto.OFPP_IN_PORT
+
+        # Send packet out
+        self.send_packet_out(in_port, out_port,
+                             pkt.data, data_str=str(pkt))
+
     def send_icmp(self, in_port, protocol_list, vlan_id, icmp_type,
                   icmp_code, icmp_data=None, msg_data=None, src_ip=None, out_port=None):
         # Generate ICMP reply packet
@@ -1803,7 +1901,7 @@ class OfCtl(object):
         if ic.data is not None:
             ip_total_length += ic.data._MIN_LEN
             if ic.data.data is not None:
-                ip_total_length += + len(ic.data.data)
+                ip_total_length += len(ic.data.data)
         i = ipv4.ipv4(ip.version, ip.header_length, ip.tos,
                       ip_total_length, ip.identification, ip.flags,
                       ip.offset, DEFAULT_TTL, inet.IPPROTO_ICMP, csum,
@@ -1935,7 +2033,7 @@ class OfCtl_v1_0(OfCtl):
     def set_routing_flow(self, cookie, priority, outport, dl_vlan=0,
                          nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                          src_port=0, dst_port=0, src_mac=0, dst_mac=0,
-                         idle_timeout=0, **dummy):
+                         nw_proto=0, idle_timeout=0, **dummy):
         ofp_parser = self.dp.ofproto_parser
 
         dl_type = ether.ETH_TYPE_IP
@@ -1955,6 +2053,7 @@ class OfCtl_v1_0(OfCtl):
                       nw_src=nw_src, src_mask=src_mask,
                       nw_dst=nw_dst, dst_mask=dst_mask,
                       src_port=src_port, dst_port=dst_port,
+                      nw_proto=nw_proto,
                       idle_timeout=idle_timeout, actions=actions)
 
     def delete_flow(self, flow_stats):
@@ -2063,7 +2162,7 @@ class OfCtl_after_v1_2(OfCtl):
     def set_routing_flow(self, cookie, priority, outport, dl_vlan=0,
                          nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                          src_port=0, dst_port=0, src_mac=0, dst_mac=0,
-                         idle_timeout=0, dec_ttl=False):
+                         nw_proto=0, idle_timeout=0, dec_ttl=False):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
 
@@ -2083,6 +2182,7 @@ class OfCtl_after_v1_2(OfCtl):
                       nw_src=nw_src, src_mask=src_mask,
                       nw_dst=nw_dst, dst_mask=dst_mask,
                       src_port=src_port, dst_port=dst_port,
+                      nw_proto=nw_proto,
                       idle_timeout=idle_timeout, actions=actions)
 
     def delete_flow(self, flow_stats):
