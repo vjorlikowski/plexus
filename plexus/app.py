@@ -43,7 +43,6 @@ from ryu.lib.packet import arp
 from ryu.lib.packet import dhcp
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import icmp
-from ryu.lib.packet import in_proto
 from ryu.lib.packet import ipv4
 from ryu.lib.packet import packet
 from ryu.lib.packet import tcp
@@ -921,7 +920,6 @@ class VlanRouter(object):
         # If the DHCP server is *not* in a subnet we know about? We should try sending a probe out the known gateway ports, bound for the DHCP server.
         
         # Basically? We need to send an ICMP from the "IP of the switch" to the production gateway serving the subnet to which the switch belongs, or, if the DHCP server is in a subnet the switch knows about, flood it out...
-        # And really? We don't need to be doing ICMP; we *should* be doing DHCP (and abusing the protocol slightly to do what is wanted)
         gateways = self.policy_routing_tbl.get_all_gateway_info()
         for gateway in gateways:
             gateway_ip, gateway_mac = gateway
@@ -934,16 +932,15 @@ class VlanRouter(object):
                     header_list = dict()
                     header_list[ETHERNET] = ethernet.ethernet(src_mac, gateway_mac, ether.ETH_TYPE_IP)
                     for server in dhcp_server_list:
-                        #header_list[IPV4] = ipv4.ipv4(src=server, dst=src_ip)
-                        header_list[IPV4] = ipv4.ipv4(src=INADDR_BROADCAST_BASE, dst=INADDR_ANY_BASE)
-                        #data = icmp.echo()
-                        #self.ofctl.send_icmp(out_port, header_list, self.vlan_id,
-                        #                     icmp.ICMP_ECHO_REQUEST,
-                        #                     0,
-                        #                     icmp_data=data, out_port=out_port)
-                        self.ofctl.send_dhcp_discover(out_port, header_list, self.vlan_id, out_port=out_port)
+                        header_list[IPV4] = ipv4.ipv4(src=server, dst=src_ip)
+                        data = icmp.echo()
+                        self.ofctl.send_icmp(out_port, header_list, self.vlan_id,
+                                             icmp.ICMP_ECHO_REQUEST,
+                                             0,
+                                             icmp_data=data, out_port=out_port)
             else:
-                self.logger.info('Unable to find path to gateway [%s] while attempting to verify DHCP server [%s]', gateway_ip, server)
+                self.logger.info('Unable to find path to gateway [%s] while attempting to verify DHCP server [%s]',
+                                 gateway_ip, server)
 
     def _set_defaultroute_drop(self):
         cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
@@ -1273,7 +1270,9 @@ class VlanRouter(object):
         # Check to see if the packet is a DHCP OFFER.
         # Check to see if IP address if one of the configured DHCP server addresses.
         # If it is not, check that the IP address is that of the default gateway for the subnet (if such exists).
-        # Presuming the correct set of the above conditions is met, RARP for the requesting MAC from the DHCP header list.
+        # Presuming the correct set of the above conditions is met,
+        # broadcast ping with frame containing requesting MAC from the DHCP header list as destination (to 
+        # determine where it lives).
         # Upon finding the port on which the MAC lives, send out the DHCP OFFER.
         if DHCP in header_list:
             op_type = None
@@ -1412,7 +1411,7 @@ class VlanRouter(object):
                                                         dl_vlan=self.vlan_id,
                                                         nw_src=INADDR_ANY_BASE,
                                                         nw_dst=INADDR_BROADCAST_BASE,
-                                                        nw_proto=in_proto.IPPROTO_UDP,
+                                                        nw_proto=inet.IPPROTO_UDP,
                                                         src_port=DHCP_CLIENT_PORT,
                                                         dst_port=DHCP_SERVER_PORT)
                             self.logger.info('Set DHCP egress flow...')
@@ -1816,54 +1815,6 @@ class OfCtl(object):
         # Send packet out
         self.send_packet_out(in_port, output, pkt.data, data_str=str(pkt))
 
-    def send_dhcp_discover(self, in_port, protocol_list, vlan_id, out_port=None):
-        # Generate DHCP discover packet
-        offset = ethernet.ethernet._MIN_LEN
-
-        if vlan_id != VLANID_NONE:
-            ether_proto = ether.ETH_TYPE_8021Q
-            pcp = 0
-            cfi = 0
-            vlan_ether = ether.ETH_TYPE_IP
-            v = vlan.vlan(pcp, cfi, vlan_id, vlan_ether)
-            offset += vlan.vlan._MIN_LEN
-        else:
-            ether_proto = ether.ETH_TYPE_IP
-
-        eth = protocol_list[ETHERNET]
-        e = ethernet.ethernet(eth.src, eth.dst, ether_proto)
-
-        ip = protocol_list[IPV4]
-        src_ip = ip.dst
-        i = ipv4.ipv4(dst=ip.src, src=src_ip, proto=inet.IPPROTO_UDP)
-
-        up = udp.udp(src_port=DHCP_CLIENT_PORT, dst_port=DHCP_SERVER_PORT)
-
-        op = dhcp.DHCP_BOOT_REQUEST
-        chaddr = eth.src
-        option_list = [dhcp.option(dhcp.DHCP_MESSAGE_TYPE_OPT, bytes(chr(dhcp.DHCP_REQUEST)), 1)]
-        # FIXME: magic cookie should be random
-        magic_cookie = '99.130.83.99'
-        options = dhcp.options(option_list=option_list, magic_cookie=magic_cookie)
-
-        dh = dhcp.dhcp(op=op, chaddr=chaddr, options=options)
-
-        pkt = packet.Packet()
-        pkt.add_protocol(e)
-        if vlan_id != VLANID_NONE:
-            pkt.add_protocol(v)
-        pkt.add_protocol(i)
-        pkt.add_protocol(up)
-        pkt.add_protocol(dh)
-        pkt.serialize()
-
-        if out_port is None:
-            out_port = self.dp.ofproto.OFPP_IN_PORT
-
-        # Send packet out
-        self.send_packet_out(in_port, out_port,
-                             pkt.data, data_str=str(pkt))
-
     def send_icmp(self, in_port, protocol_list, vlan_id, icmp_type,
                   icmp_code, icmp_data=None, msg_data=None, src_ip=None, out_port=None):
         # Generate ICMP reply packet
@@ -2130,14 +2081,14 @@ class OfCtl_after_v1_2(OfCtl):
                 match.set_ip_proto(nw_proto)
                 table_id = 1
                 if src_port:
-                    if nw_proto == in_proto.IPPROTO_TCP:
+                    if nw_proto == inet.IPPROTO_TCP:
                         match.set_tcp_src(src_port)
-                    elif nw_proto == in_proto.IPPROTO_UDP:
+                    elif nw_proto == inet.IPPROTO_UDP:
                         match.set_udp_src(src_port)
                 if dst_port:
-                    if nw_proto == in_proto.IPPROTO_TCP:
+                    if nw_proto == inet.IPPROTO_TCP:
                         match.set_tcp_dst(dst_port)
-                    elif nw_proto == in_proto.IPPROTO_UDP:
+                    elif nw_proto == inet.IPPROTO_UDP:
                         match.set_udp_dst(dst_port)
             elif dl_type == ether.ETH_TYPE_ARP:
                 match.set_arp_opcode(nw_proto)
