@@ -13,7 +13,7 @@ Release:   %{builddate}git%{shortcommit}%{?dist}
 Summary:   plexus is a Ryu controller application, providing a wide variety of software-defined networking functionality.
 
 Group:     Applications/System
-License:   BSD
+License:   MIT
 URL:       https://gitlab.oit.duke.edu/vjo/plexus
 Source:    %{name}-%{commit}.tgz
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
@@ -129,6 +129,8 @@ rm -rf %{buildroot}
 %attr(755, %{name}, %{name}) %dir %{_localstatedir}/run/%{name}
 %{_initrddir}/plexus
 %endif
+%doc LICENSE
+%doc README.md
 
 %pre
 getent group %{name} >/dev/null || groupadd -r %{name}
