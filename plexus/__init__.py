@@ -1,3 +1,16 @@
+# Copyright (c) 2015 Duke University.
+# This software is distributed under the terms of the MIT License,
+# the text of which is included in this distribution within the file
+# named LICENSE.
+#
+# Portions of this software are derived from the "rest_router" controller
+# application included with Ryu (http://osrg.github.io/ryu/), which is:
+# Copyright (C) 2013 Nippon Telegraph and Telephone Corporation.
+#
+# Modifications and additions were made to the original content by the
+# following authors:
+# Author: Victor J. Orlikowski <vjo@duke.edu>
+
 # Common imports
 import struct
 
@@ -21,7 +34,13 @@ from ryu.ofproto import ofproto_v1_2
 from ryu.ofproto import ofproto_v1_3
 
 # Application constant definitions and configuration setup
+__author__ = "Victor J. Orlikowski"
+__copyright__ = "Copyright 2015, Duke University"
+__credits__ = ["Victor J. Orlikowski", "Nippon Telegraph and Telephone Corporation"]
+__license__ = "MIT"
 __version__ = '0.1'
+__maintainer__ = "Victor J. Orlikowski"
+__email__ = "vjo@duke.edu"
 
 UINT16_MAX = 0xffff
 UINT32_MAX = 0xffffffff
