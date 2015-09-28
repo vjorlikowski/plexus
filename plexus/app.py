@@ -12,6 +12,7 @@
 # Author: Victor J. Orlikowski <vjo@duke.edu>
 
 # Plexus controller application entry point/main program
+
 import requests
 import urllib3.contrib.pyopenssl
 
@@ -30,60 +31,6 @@ from plexus import *
 from plexus.router import *
 from plexus.util import *
 
-#=============================
-#          REST API
-#=============================
-#
-#  Note: specify switch and vlan group, as follows.
-#   {switch_id} : 'all' or switchID
-#   {vlan_id}   : 'all' or vlanID
-#
-#
-## 1. get address data and routing data.
-#
-# * get data of no vlan
-# GET /router/{switch_id}
-#
-# * get data of specific vlan group
-# GET /router/{switch_id}/{vlan_id}
-#
-#
-## 2. set address data or routing data.
-#
-# * set data of no vlan
-# POST /router/{switch_id}
-#
-# * set data of specific vlan group
-# POST /router/{switch_id}/{vlan_id}
-#
-#  case1: set address data.
-#    parameter = {"address": "A.B.C.D/M"}
-#  case2-1: set static route.
-#    parameter = {"destination": "A.B.C.D/M", "gateway": "E.F.G.H"}
-#  case2-2: set default route.
-#    parameter = {"gateway": "E.F.G.H"}
-#  case2-3: set static route for a specific address range.
-#    parameter = {"destination": "A.B.C.D/M", "gateway": "E.F.G.H", "address_id": "<int>"}
-#  case2-4: set default route for a specific address range.
-#    parameter = {"gateway": "E.F.G.H", "address_id": "<int>"}
-#  case3: set DHCP server for a VLAN
-#    parameter = {"dhcp_servers": [ "A.B.C.D", "E.F.G.H" ]}
-#
-#
-## 3. delete address data or routing data.
-#
-# * delete data of no vlan
-# DELETE /router/{switch_id}
-#
-# * delete data of specific vlan group
-# DELETE /router/{switch_id}/{vlan_id}
-#
-#  case1: delete address data.
-#    parameter = {"address_id": "<int>"} or {"address_id": "all"}
-#  case2: delete routing data.
-#    parameter = {"route_id": "<int>"} or {"route_id": "all"}
-#
-#
 
 class Plexus(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION,
