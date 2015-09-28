@@ -7,18 +7,16 @@ It makes use of the Ryu OpenFlow controller framework
 "rest_router" example application that is included with Ryu.
 
 Plexus extends the "rest_router" example in several key ways:
-1. The concept of a "policy routing table" is added, wherein
-static routes can be applied only for specific source address
-ranges.
-2. Error reporting is provided if a gateway associated with a
-route is unreachable.
-3. Management of DHCP traffic is provided, for integration with
-existing production deployments.
+
+1. The concept of a "policy routing table" is added, wherein static routes can be applied only for specific source address ranges.
+2. Error reporting is provided if a gateway associated with a route is unreachable.
+3. Management of DHCP traffic is provided, for integration with existing production deployments.
 
 Plexus is nowhere near complete, and has some known bugs.
 Development is ongoing, and contributions are welcomed.
 
 Near-term planned additions:
+
 1. Traffic "tag flipping" from one VLAN to another.
 2. Network address translation from one subnet to another, for a specified range of IPs.
 3. Routing of traffic based on source and/or destination TCP/UDP port matches.
@@ -32,7 +30,9 @@ Latin etymology of the word.
 The second meaning of the word, according to the Mirriam-Webster
 dictionary (http://www.merriam-webster.com/dictionary/plexus) is:
 
+```
 "an interwoven combination of parts or elements in a structure or system"
+```
 
 According to the wikitionary (https://en.wiktionary.org/wiki/plexus#Latin),
 "plexus" is the perfect passive participle of plectō (plectere, plexī, plexum).
