@@ -1,7 +1,5 @@
 #
 # Switchboard Controller Dockerfile
-# FIXME: Use right path for supervisord
-# FIXME: Config file management
 #
 
 # Pull base image.
@@ -24,9 +22,9 @@ RUN pip install oslo.config==2.3.0
 RUN pip install pbr==0.10.8
 
 # Finally, install Ryu...
-RUN pip install ryu==3.24
+RUN pip install ryu==3.25
 
-# FIXME: need to move controller stuff into the right place here...
+# FIXME: Do controller installation here - probably a wget/untar/setup.py
 
 # Define ports
 EXPOSE 6633 8080
