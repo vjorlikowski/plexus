@@ -18,6 +18,7 @@ import socket
 from webob import Response
 
 from ryu.lib import addrconv
+from ryu.exception import RyuException
 
 from plexus import *
 
