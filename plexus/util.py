@@ -53,6 +53,11 @@ def get_priority(priority_type, vid=0, route=None):
     else:
         return priority, log_msg
 
+def get_priority_type(priority, vid):
+    if vid:
+        priority -= PRIORITY_VLAN_SHIFT
+    return priority
+
 # REST command template
 def rest_command(func):
     def _rest_command(*args, **kwargs):
@@ -138,3 +143,11 @@ def nw_addr_aton(nw_addr, err_msg=None):
 class RouterLoggerAdapter(logging.LoggerAdapter):
     def process(self, msg, kwargs):
         return '[DPID %16s] %s' % (self.extra['sw_id'], msg), kwargs
+
+
+class NotFoundError(RyuException):
+    message = 'Router SW is not connected. : switch_id=%(switch_id)s'
+
+
+class CommandFailure(RyuException):
+    pass
