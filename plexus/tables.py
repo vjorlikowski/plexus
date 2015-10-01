@@ -100,7 +100,7 @@ class PolicyRoutingTable(dict):
         self.route_id = 1
         self.dhcp_servers = []
 
-    def add(self, dst_nw_addr, gateway_ip, src_address=None):
+    def add(self, dst_nw_addr, dst_vlan, gateway_ip, src_address=None):
         err_msg = 'Invalid [%s] value.'
         added_route = None
         key = INADDR_ANY
@@ -113,7 +113,7 @@ class PolicyRoutingTable(dict):
             self.add_table(key, src_address)
 
         table = self[key]
-        added_route = table.add(dst_nw_addr, gateway_ip, self.route_id)
+        added_route = table.add(dst_nw_addr, dst_vlan, gateway_ip, self.route_id)
 
         if added_route is not None:
             self.route_id += 1
@@ -168,7 +168,7 @@ class RoutingTable(dict):
         super(RoutingTable, self).__init__()
         self.src_address = address
 
-    def add(self, dst_nw_addr, gateway_ip, route_id):
+    def add(self, dst_nw_addr, dst_vlan, gateway_ip, route_id):
         err_msg = 'Invalid [%s] value.'
 
         if dst_nw_addr == INADDR_ANY:
@@ -192,7 +192,7 @@ class RoutingTable(dict):
             msg = 'Destination overlaps [route_id=%d]' % overlap_route
             raise CommandFailure(msg=msg)
 
-        routing_data = Route(route_id, dst_ip, dst_netmask, gateway_ip, self.src_address)
+        routing_data = Route(route_id, dst_ip, dst_netmask, dst_vlan, gateway_ip, self.src_address)
         self[key] = routing_data
 
         return routing_data
@@ -235,11 +235,12 @@ class RoutingTable(dict):
 
 
 class Route(object):
-    def __init__(self, route_id, dst_ip, dst_netmask, gateway_ip, src_address=None):
+    def __init__(self, route_id, dst_ip, dst_netmask, dst_vlan, gateway_ip, src_address=None):
         super(Route, self).__init__()
         self.route_id = route_id
         self.dst_ip = dst_ip
         self.dst_netmask = dst_netmask
+        self.dst_vlan = dst_vlan
         self.gateway_ip = gateway_ip
         self.gateway_mac = None
         if src_address is None:

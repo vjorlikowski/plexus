@@ -48,6 +48,7 @@ UINT64_MAX = 0xffffffffffffffff
 
 ETHERNET = ethernet.ethernet.__name__
 VLAN = vlan.vlan.__name__
+SVLAN = vlan.svlan.__name__
 IPV4 = ipv4.ipv4.__name__
 ARP = arp.arp.__name__
 ICMP = icmp.icmp.__name__
@@ -100,6 +101,7 @@ REST_ADDRESS = 'address'
 REST_ROUTEID = 'route_id'
 REST_ROUTE = 'route'
 REST_DESTINATION = 'destination'
+REST_DESTINATION_VLAN = 'destination_vlan'
 REST_GATEWAY = 'gateway'
 REST_GATEWAY_MAC = 'gateway_mac'
 REST_SOURCE = 'source'

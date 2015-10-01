@@ -113,6 +113,7 @@ class Router(dict):
     def set_data(self, vlan_id, param, waiters):
         vlan_routers = self._get_vlan_router(vlan_id)
         if not vlan_routers:
+            bare = False
             if REST_BARE in param:
                 bare = param[REST_BARE]
                 try:
@@ -175,6 +176,7 @@ class Router(dict):
             # Event dispatch
             if vlan_id in self:
                 self[vlan_id].packet_in_handler(msg, header_list)
+                # FIXME: Deal with updating any routing rules that route to this vlan_id from other routers here.
             else:
                 self.logger.debug('Drop unknown vlan packet. [vlan_id=%d]', vlan_id)
 
@@ -300,16 +302,20 @@ class VlanRouter(object):
             # Set routing data
             elif REST_GATEWAY in data:
                 gateway = data[REST_GATEWAY]
-                address_id = None
                 destination = INADDR_ANY
+                dest_vlan = None
+                address_id = None
 
                 if REST_DESTINATION in data:
                     destination = data[REST_DESTINATION]
 
+                if REST_DESTINATION_VLAN in data:
+                    dest_vlan = data[REST_DESTINATION_VLAN]
+
                 if REST_ADDRESSID in data:
                     address_id = data[REST_ADDRESSID]
 
-                route_id = self._set_routing_data(destination, gateway, address_id)
+                route_id = self._set_routing_data(destination, dest_vlan, gateway, address_id)
                 details = 'Add route [route_id=%d]' % route_id
             elif REST_DHCP in data:
                 dhcp_servers = data[REST_DHCP]
@@ -354,7 +360,7 @@ class VlanRouter(object):
 
         return address.address_id
 
-    def _set_routing_data(self, destination, gateway, address_id=None):
+    def _set_routing_data(self, destination, dest_vlan, gateway, address_id=None):
         err_msg = 'Invalid [%s] value.' % REST_GATEWAY
         dst_ip = ip_addr_aton(gateway, err_msg=err_msg)
         address = self.address_data.get_data(ip=dst_ip)
@@ -373,6 +379,26 @@ class VlanRouter(object):
                     msg = 'Requested address %s for route is not registered.' % address_id
                     raise CommandFailure(msg=msg)
 
+        if dest_vlan is not None:
+            try:
+                dest_vlan = int(dest_vlan)
+            except ValueError as e:
+                err_msg = 'Invalid [%s] value. %s'
+                raise ValueError(err_msg % (REST_DESTINATION_VLAN, e.message))
+
+            if not (dest_vlan == VLANID_NONE or
+                    (dest_vlan >= VLANID_MIN and dest_vlan <= VLANID_MAX)):
+                err_msg = ('Value {%d} for [%s] out of permitted range. ' +
+                           'Please use any of [%d] or [%d-%d].')
+                raise ValueError(err_msg % (dest_vlan, REST_DESTINATION_VLAN,
+                                            VLANID_NONE, VLANID_MIN, VLANID_MAX))
+
+            if (self.vlan_id == dest_vlan):
+                # It is not an invalid usage of the API to specify a destination VLAN
+                # that is the same as the VLAN of the router handling the packet...
+                # ...but it is pointless.
+                dest_vlan = None
+
         if address is None:
             msg = 'Gateway=%s\'s address is not registered.' % gateway
             raise CommandFailure(msg=msg)
@@ -382,9 +408,9 @@ class VlanRouter(object):
             raise CommandFailure(msg=msg)
         else:
             src_ip = address.default_gw
-            route = self.policy_routing_tbl.add(destination, gateway, requested_address)
+            route = self.policy_routing_tbl.add(destination, dest_vlan, gateway, requested_address)
             self._set_route_packetin(route)
-            self.send_arp_request(src_ip, dst_ip)
+            self.send_arp_request(src_ip, dst_ip, dst_vlan=dest_vlan)
             return route.route_id
 
     def _set_dhcp_data(self, dhcp_server_list, update_records=False):
@@ -661,11 +687,12 @@ class VlanRouter(object):
 
     def _packetin_arp(self, msg, header_list):
         src_addr = self.address_data.get_data(ip=header_list[ARP].src_ip)
-        self.logger.info('Handling incoming ARP from [%s] to [%s].',
+        self.logger.info('Handling incoming ARP from [%s] to [%s] on VLAN [%d]',
                          ip_addr_ntoa(header_list[ARP].src_ip),
-                         ip_addr_ntoa(header_list[ARP].dst_ip))
+                         ip_addr_ntoa(header_list[ARP].dst_ip),
+                         self.vlan_id)
         if src_addr is None:
-            self.logger.info('No gateway defined for subnet; not handling ARP')
+            self.logger.info('No gateway defined for subnet; not handling ARP.')
             return
 
         # Housekeeping tasks, associated with seeing an ARP.
@@ -713,13 +740,19 @@ class VlanRouter(object):
                 output = in_port
                 in_port = self.ofctl.dp.ofproto.OFPP_CONTROLLER
 
-                self.ofctl.send_arp(arp.ARP_REPLY, self.vlan_id,
+                dst_vlan = self.vlan_id
+                if SVLAN in header_list:
+                    dst_vlan = header_list[SVLAN].vid
+
+                self.ofctl.send_arp(arp.ARP_REPLY, self.vlan_id, dst_vlan,
                                     dst_mac, src_mac, dst_ip, src_ip,
                                     arp_target_mac, in_port, output)
 
-                log_msg = 'Received ARP request from [%s] to router port [%s].'
-                self.logger.info(log_msg, srcip, dstip)
-                self.logger.info('Send ARP reply to [%s] on port [%s]', srcip, output)
+                self.logger.info(('Received ARP request from [%s] ' +
+                                 'to router address [%s].'),
+                                 srcip, dstip)
+                self.logger.info('Sending ARP reply to [%s] on port [%s]',
+                                 srcip, output)
 
             elif header_list[ARP].opcode == arp.ARP_REPLY:
                 #  ARP reply to router port -> suspend packets forward
@@ -863,7 +896,7 @@ class VlanRouter(object):
             address = self.address_data.get_data(ip=gateway_ip)
             self.send_arp_request(address.default_gw, gateway_ip)
 
-    def send_arp_request(self, src_ip, dst_ip, in_port=None):
+    def send_arp_request(self, src_ip, dst_ip, in_port=None, dst_vlan=None):
         # Send ARP request from all ports.
         for send_port in self.port_data.values():
             if in_port is None or in_port != send_port.port_no:
@@ -872,7 +905,9 @@ class VlanRouter(object):
                 arp_target_mac = mac_lib.DONTCARE_STR
                 inport = self.ofctl.dp.ofproto.OFPP_CONTROLLER
                 output = send_port.port_no
-                self.ofctl.send_arp(arp.ARP_REQUEST, self.vlan_id,
+                if dst_vlan is None:
+                    dst_vlan = self.vlan_id
+                self.ofctl.send_arp(arp.ARP_REQUEST, self.vlan_id, dst_vlan,
                                     src_mac, dst_mac, src_ip, dst_ip,
                                     arp_target_mac, inport, output)
 
