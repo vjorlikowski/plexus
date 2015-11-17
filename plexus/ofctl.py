@@ -56,20 +56,15 @@ class OfCtl(object):
         # Abstract method
         raise NotImplementedError()
 
-    def send_arp(self, arp_opcode, src_vlan_id, dst_vlan_id, src_mac, dst_mac,
+    def send_arp(self, arp_opcode, vlan_id, src_mac, dst_mac,
                  src_ip, dst_ip, arp_target_mac, in_port, output):
         # Generate ARP packet
-        add_vlan_tags = False
-        if ((src_vlan_id != dst_vlan_id) or (dst_vlan_id != VLANID_NONE)):
-            ether_proto = ether.ETH_TYPE_8021AD
-            vlan_proto = ether.ETH_TYPE_8021Q
-            svlan_proto = ether.ETH_TYPE_ARP
+        if vlan_id != VLANID_NONE:
+            ether_proto = ether.ETH_TYPE_8021Q
             pcp = 0
             cfi = 0
-
-            sv = vlan.svlan(pcp, cfi, src_vlan_id, vlan_proto)
-            v = vlan.vlan(pcp, cfi, dst_vlan_id, svlan_proto)
-            add_vlan_tags = True
+            vlan_ether = ether.ETH_TYPE_ARP
+            v = vlan.vlan(pcp, cfi, vlan_id, vlan_ether)
         else:
             ether_proto = ether.ETH_TYPE_ARP
         hwtype = 1
@@ -82,8 +77,7 @@ class OfCtl(object):
         a = arp.arp(hwtype, arp_proto, hlen, plen, arp_opcode,
                     src_mac, src_ip, arp_target_mac, dst_ip)
         pkt.add_protocol(e)
-        if add_vlan_tags:
-            pkt.add_protocol(sv)
+        if vlan_id != VLANID_NONE:
             pkt.add_protocol(v)
         pkt.add_protocol(a)
         pkt.serialize()

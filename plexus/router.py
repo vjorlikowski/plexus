@@ -741,10 +741,8 @@ class VlanRouter(object):
                 in_port = self.ofctl.dp.ofproto.OFPP_CONTROLLER
 
                 dst_vlan = self.vlan_id
-                if SVLAN in header_list:
-                    dst_vlan = header_list[SVLAN].vid
 
-                self.ofctl.send_arp(arp.ARP_REPLY, self.vlan_id, dst_vlan,
+                self.ofctl.send_arp(arp.ARP_REPLY, self.vlan_id,
                                     dst_mac, src_mac, dst_ip, src_ip,
                                     arp_target_mac, in_port, output)
 
@@ -896,7 +894,7 @@ class VlanRouter(object):
             address = self.address_data.get_data(ip=gateway_ip)
             self.send_arp_request(address.default_gw, gateway_ip)
 
-    def send_arp_request(self, src_ip, dst_ip, in_port=None, dst_vlan=None):
+    def send_arp_request(self, src_ip, dst_ip, in_port=None):
         # Send ARP request from all ports.
         for send_port in self.port_data.values():
             if in_port is None or in_port != send_port.port_no:
@@ -905,9 +903,7 @@ class VlanRouter(object):
                 arp_target_mac = mac_lib.DONTCARE_STR
                 inport = self.ofctl.dp.ofproto.OFPP_CONTROLLER
                 output = send_port.port_no
-                if dst_vlan is None:
-                    dst_vlan = self.vlan_id
-                self.ofctl.send_arp(arp.ARP_REQUEST, self.vlan_id, dst_vlan,
+                self.ofctl.send_arp(arp.ARP_REQUEST, self.vlan_id,
                                     src_mac, dst_mac, src_ip, dst_ip,
                                     arp_target_mac, inport, output)
 
