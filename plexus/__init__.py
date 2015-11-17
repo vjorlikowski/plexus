@@ -124,6 +124,16 @@ PRIORITY_IP_HANDLING = 7
 PRIORITY_TYPE_ROUTE = 'priority_route'
 
 CONF = cfg.CONF
+plexus_configuration_group = 'plexus'
+plexus_backdoor_opt = cfg.BoolOpt('backdoor_enable',
+                                  default = True,
+                                  help = 'Enable backdoor REPL for inspecting state of python runtime')
+plexus_backdoor_port_opt = cfg.IntOpt('backdoor_listen_port',
+                                      default = 3000,
+                                      help='Port on which the backdoor REPL should listen, on the local interface')
+CONF.register_opt(plexus_backdoor_opt, group = plexus_configuration_group)
+CONF.register_opt(plexus_backdoor_port_opt, group = plexus_configuration_group)
+
 switchboard_configuration_group = 'switchboard'
 switchboard_stateurl_opt = cfg.StrOpt('state_url',
                                       default = 'https://switchboard.oit.duke.edu/sdn_callback/restore_state',

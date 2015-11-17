@@ -16,6 +16,8 @@
 import requests
 import urllib3.contrib.pyopenssl
 
+import eventlet.backdoor as backdoor
+
 from ryu.app.wsgi import ControllerBase
 from ryu.app.wsgi import WSGIApplication
 from ryu.base import app_manager
@@ -26,6 +28,7 @@ from ryu.controller.handler import CONFIG_DISPATCHER
 from ryu.controller.handler import MAIN_DISPATCHER
 from ryu.exception import OFPUnknownVersion
 from ryu.exception import RyuException
+from ryu.lib import hub
 
 from plexus import *
 from plexus.router import *
@@ -45,6 +48,10 @@ class Plexus(app_manager.RyuApp):
 
         # logger configure
         PlexusController.set_logger(self.logger)
+
+        # Set up backdoor REPL, if requested.
+        if CONF.plexus.backdoor_enable:
+            hub.spawn(backdoor.backdoor_server, hub.listen(('localhost', CONF.plexus.backdoor_listen_port)))
 
         wsgi = kwargs['wsgi']
         self.waiters = {}
