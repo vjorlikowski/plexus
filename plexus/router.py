@@ -410,7 +410,7 @@ class VlanRouter(object):
             src_ip = address.default_gw
             route = self.policy_routing_tbl.add(destination, dest_vlan, gateway, requested_address)
             self._set_route_packetin(route)
-            self.send_arp_request(src_ip, dst_ip, dst_vlan=dest_vlan)
+            self.send_arp_request(src_ip, dst_ip)
             return route.route_id
 
     def _set_dhcp_data(self, dhcp_server_list, update_records=False):
