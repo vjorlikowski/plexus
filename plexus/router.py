@@ -125,6 +125,7 @@ class Router(dict):
 
         msgs = []
         for vlan_router in vlan_routers:
+            # FIXME: Put an error in here, if someone tried to make a non-bare router bare!
             if not vlan_router.bare:
                 try:
                     msg = vlan_router.set_data(param)
@@ -205,8 +206,12 @@ class VlanRouter(object):
         self.ofctl = OfCtl.factory(dp, logger)
         self.bare = bare
 
-        # Set flow: default route (drop), if VLAN is not "bare"
-        if not self.bare:
+        # Set default route flow:
+        # 1) If bare VLAN, define packet in handler.
+        # 2) If managed VLAN, drop by default.
+        if self.bare:
+            self._set_bare_vlan_ip_handling()
+        else:
             self._set_defaultroute_drop()
 
     def delete(self, waiters):
@@ -249,19 +254,22 @@ class VlanRouter(object):
         return get_priority(priority_type, vid=self.vlan_id, route=route)
 
     def _response(self, msg):
-        if msg and self.vlan_id:
-            msg.setdefault(REST_VLANID, self.vlan_id)
+        msg.setdefault(REST_VLANID, self.vlan_id)
         return msg
 
     def get_data(self):
-        address_data = self._get_address_data()
-        routing_data = self._get_routing_data()
-
         data = {}
-        if address_data[REST_ADDRESS]:
-            data.update(address_data)
-        if routing_data[REST_ROUTE]:
-            data.update(routing_data)
+
+        if self.bare:
+            data.update({REST_BARE: self.bare})
+        else:
+            address_data = self._get_address_data()
+            routing_data = self._get_routing_data()
+
+            if address_data[REST_ADDRESS]:
+                data.update(address_data)
+            if routing_data[REST_ROUTE]:
+                data.update(routing_data)
 
         return self._response(data)
 
@@ -490,6 +498,12 @@ class VlanRouter(object):
                 self.logger.info('Unable to find path to gateway [%s] while attempting to verify DHCP server [%s]',
                                  gateway_ip, server)
 
+    def _set_bare_vlan_ip_handling(self):
+        cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
+        priority = self._get_priority(PRIORITY_DEFAULT_ROUTING)
+        self.ofctl.set_packetin_flow(cookie, priority, dl_type=ether.ETH_TYPE_IP, dl_vlan=self.vlan_id)
+        self.logger.info('Set IP handling (packet in) flow [cookie=0x%x] for bare VLAN [%d]', cookie, self.vlan_id)
+
     def _set_defaultroute_drop(self):
         cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
         priority = self._get_priority(PRIORITY_DEFAULT_ROUTING)
@@ -691,8 +705,8 @@ class VlanRouter(object):
                          ip_addr_ntoa(header_list[ARP].src_ip),
                          ip_addr_ntoa(header_list[ARP].dst_ip),
                          self.vlan_id)
-        if src_addr is None:
-            self.logger.info('No gateway defined for subnet; not handling ARP.')
+        if (src_addr is None) and (not self.bare):
+            self.logger.info('No gateway defined for subnet containing [%s]; not handling ARP.', header_list[ARP].src_ip)
             return
 
         # Housekeeping tasks, associated with seeing an ARP.
@@ -724,7 +738,7 @@ class VlanRouter(object):
         elif dst_ip not in rt_ports:
             dst_addr = self.address_data.get_data(ip=dst_ip)
             if (dst_addr is not None and
-                    src_addr.address_id == dst_addr.address_id):
+                    src_addr.address_id == dst_addr.address_id) or self.bare:
                 # ARP from internal host -> ALL (in the same address range, which must be defined)
                 output = self.ofctl.dp.ofproto.OFPP_ALL
                 self.ofctl.send_packet_out(in_port, output, msg.data)
