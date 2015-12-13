@@ -12,6 +12,7 @@
 # Author: Victor J. Orlikowski <vjo@duke.edu>
 
 import warnings
+import traceback
 
 from plexus import *
 from plexus.ofctl import *
@@ -168,18 +169,26 @@ class Router(dict):
         #self.logger.debug('Packet in = %s', str(pkt), self.sw_id)
         header_list = dict((p.protocol_name, p)
                            for p in pkt.protocols if type(p) != str)
-        if header_list:
-            # Check vlan-tag
-            vlan_id = VLANID_NONE
-            if VLAN in header_list:
-                vlan_id = header_list[VLAN].vid
+        try:
+            if header_list:
+                # Check vlan-tag
+                vlan_id = VLANID_NONE
+                if VLAN in header_list:
+                    vlan_id = header_list[VLAN].vid
 
-            # Event dispatch
-            if vlan_id in self:
-                self[vlan_id].packet_in_handler(msg, header_list)
-                # FIXME: Deal with updating any routing rules that route to this vlan_id from other routers here.
+                # Event dispatch
+                if vlan_id in self:
+                    self[vlan_id].packet_in_handler(msg, header_list)
+                    # FIXME: Deal with updating any routing rules that route to this vlan_id from other routers here.
+                else:
+                    self.logger.debug('Drop unknown vlan packet. [vlan_id=%d]', vlan_id)
             else:
-                self.logger.debug('Drop unknown vlan packet. [vlan_id=%d]', vlan_id)
+                self.logger.debug('Unable to parse payload packet headers; dropping packet-in.')
+        except Exception as e:
+            self.logger.debug('Exception encountered during packet-in processing, possibly ' +
+                              'due to external datapath changes causing internal state inconsistency.\n' +
+                              '%s\n' + 'Internal state should regain consistency shortly.\n',
+                              traceback.format_exc())
 
     def _cyclic_update_routing_tbls(self):
         while True:
