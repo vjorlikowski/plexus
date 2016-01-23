@@ -54,6 +54,7 @@ mkdir -p %{_builddir}%{venv_dir}
 virtualenv %{_builddir}%{venv_dir}
 
 # Install dependencies and application support.
+%{_builddir}%{venv_dir}/bin/pip install setuptools==18.0.1
 %{_builddir}%{venv_dir}/bin/pip install cffi==1.5.0
 %{_builddir}%{venv_dir}/bin/pip install six==1.4.1
 %{_builddir}%{venv_dir}/bin/pip install pyasn1==0.1.9
