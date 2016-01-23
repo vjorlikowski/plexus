@@ -94,7 +94,7 @@ class Plexus(app_manager.RyuApp):
     @set_ev_cls(dpset.EventDP, dpset.DPSET_EV_DISPATCHER)
     def datapath_handler(self, ev):
         if ev.enter:
-            PlexusController.register_router(ev.dp)
+            PlexusController.register_router(ev.dp, ev.ports, self.waiters)
         else:
             PlexusController.unregister_router(ev.dp)
 
@@ -102,6 +102,10 @@ class Plexus(app_manager.RyuApp):
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
         datapath.n_tables = ev.msg.n_tables
+
+    @set_ev_cls(dpset.EventDPReconnected, dpset.DPSET_EV_DISPATCHER)
+    def datapath_change_handler(self, ev):
+        PlexusController.router_datapath_change_handler(ev.dp, ev.ports, self.waiters)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -152,10 +156,10 @@ class PlexusController(ControllerBase):
         cls._LOGGER = logger
 
     @classmethod
-    def register_router(cls, dp):
+    def register_router(cls, dp, ports, waiters):
         logger = RouterLoggerAdapter(cls._LOGGER, {'sw_id': dpid_lib.dpid_to_str(dp.id)})
         try:
-            router = Router(dp, logger)
+            router = Router(dp, ports, waiters, logger)
         except OFPUnknownVersion as message:
             logger.error(str(message))
             return
@@ -179,6 +183,15 @@ class PlexusController(ControllerBase):
 
             logger = RouterLoggerAdapter(cls._LOGGER, {'sw_id': dpid_lib.dpid_to_str(dp.id)})
             logger.info('Leave router.')
+
+    @classmethod
+    def router_datapath_change_handler(cls, dp, ports, waiters):
+        assert dp is not None
+        if dp.id in cls._ROUTER_LIST:
+            # Datapath changed, but router is still present.
+            # Force re-creation of router object.
+            cls.unregister_router(dp)
+            cls.register_router(dp, ports, waiters)
 
     @classmethod
     def packet_in_handler(cls, msg):

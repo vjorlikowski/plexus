@@ -14,10 +14,11 @@
 from plexus import *
 from plexus.util import *
 
+
 class PortData(dict):
     def __init__(self, ports):
         super(PortData, self).__init__()
-        for port in ports.values():
+        for port in ports:
             data = Port(port.port_no, port.hw_addr)
             self[port.port_no] = data
 
@@ -54,7 +55,7 @@ class AddressData(dict):
         self[key] = address
 
         self.address_id += 1
-        self.address_id &= UINT32_MAX
+        self.address_id &= UINT16_MAX
         if self.address_id == COOKIE_DEFAULT_ID:
             self.address_id = 1
 
@@ -117,7 +118,7 @@ class PolicyRoutingTable(dict):
 
         if added_route is not None:
             self.route_id += 1
-            self.route_id &= UINT32_MAX
+            self.route_id &= UINT16_MAX
             if self.route_id == COOKIE_DEFAULT_ID:
                 self.route_id = 1
 
@@ -292,3 +293,32 @@ class SuspendPacket(object):
         self.data = data
         # Start ARP reply wait timer.
         self.wait_thread = hub.spawn(timer, self)
+
+
+class PenaltyBoxList(list):
+    def __init__(self):
+        super(PenaltyBoxList, self).__init__()
+        self._expiry_thread = hub.spawn(self._expire_loop)
+
+    def shutdown(self):
+        hub.kill(self._expiry_thread)
+        self._expiry_thread.wait()
+
+    def _expire_loop(self):
+        while True:
+            for entry in self:
+                entry.count -= PENALTY_BOX_DRAIN_AMOUNT
+                if (entry.count <= 0):
+                    self.remove(entry)
+            hub.sleep(PENALTY_BOX_CHECK_INTERVAL)
+
+
+class PenaltyBoxEntry(object):
+    def __init__(self, in_port=None, dl_type=None, src_ip=None, dst_ip=None):
+        super(PenaltyBoxEntry, self).__init__()
+        self.in_port = in_port
+        self.dl_type = dl_type
+        self.src_ip = src_ip
+        self.dst_ip = dst_ip
+        self.count = 1
+        self.priority = None # Unset, until a rule is inserted.

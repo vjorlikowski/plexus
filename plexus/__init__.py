@@ -56,7 +56,33 @@ TCP = tcp.tcp.__name__
 UDP = udp.udp.__name__
 DHCP = dhcp.dhcp.__name__
 
-MAX_SUSPENDPACKETS = 3  # Maximum number of suspended packets awaiting send.
+# Maximum number of suspended packets awaiting send per IP
+MAX_SUSPENDPACKETS_PER_IP = 20
+# Maximum number of suspended packets awaiting send per VlanRouter for all IPs
+MAX_SUSPENDPACKETS = 200
+
+# Seconds between walking the penalty box list
+PENALTY_BOX_CHECK_INTERVAL = 3
+# Amount by which to decrease penalty box counts every interval
+PENALTY_BOX_DRAIN_AMOUNT = 50
+
+# Maximum number of hits to an ARP matching penalty box entry
+# before a penalty box rule gets inserted.
+PENALTY_BOX_ENTRY_ARP_MAXHITS = 1000
+# Number of hits to an ARP matching penalty box entry
+# at which the switch is forcibly disconnected.
+PENALTY_BOX_ARP_DISCONNECT_THRESHOLD = (PENALTY_BOX_ENTRY_ARP_MAXHITS * 2)
+# Hard timeout for ARP matching penalty box rules, in seconds.
+PENALTY_BOX_ARP_HARD_TIMEOUT = 10
+
+# Maximum number of hits to an IPv4 matching penalty box entry,
+# before a penalty box rule gets inserted.
+PENALTY_BOX_ENTRY_IPV4_MAXHITS = 500
+# Number of hits to an IPv4 matching penalty box entry
+# at which the switch is forcibly disconnected.
+PENALTY_BOX_IPV4_DISCONNECT_THRESHOLD = (PENALTY_BOX_ENTRY_IPV4_MAXHITS * 2)
+# Hard timeout for IPv4 matching penalty box rules, in seconds.
+PENALTY_BOX_IPV4_HARD_TIMEOUT = 15
 
 ARP_REPLY_TIMER = 10  # sec
 OFP_REPLY_TIMER = 1.0  # sec
@@ -120,6 +146,7 @@ PRIORITY_ADDRESSED_STATIC_ROUTING = 4
 PRIORITY_IMPLICIT_ROUTING = 5
 PRIORITY_L2_SWITCHING = 6
 PRIORITY_IP_HANDLING = 7
+PRIORITY_PENALTYBOX = 8
 
 PRIORITY_TYPE_ROUTE = 'priority_route'
 

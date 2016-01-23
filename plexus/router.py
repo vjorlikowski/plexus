@@ -12,7 +12,6 @@
 # Author: Victor J. Orlikowski <vjo@duke.edu>
 
 import warnings
-import traceback
 
 from plexus import *
 from plexus.ofctl import *
@@ -20,25 +19,18 @@ from plexus.tables import *
 from plexus.util import *
 
 class Router(dict):
-    def __init__(self, dp, logger):
+    def __init__(self, dp, ports, waiters, logger):
         super(Router, self).__init__()
         self.dp = dp
+        self.waiters = waiters
+        self.logger = logger
         self.dpid_str = dpid_lib.dpid_to_str(dp.id)
         self.sw_id = {'sw_id': self.dpid_str}
-        self.logger = logger
 
-        # FIXME: Can silence warning about using ports here.
-        # Probably not the right fix though.
-        #with warnings.catch_warnings():
-        #    warnings.simplefilter('ignore')
-        #    self.port_data = PortData(dp.ports)
-        self.port_data = PortData(dp.ports)
+        self.port_data = PortData(ports)
 
         ofctl = OfCtl.factory(dp, logger)
         cookie = COOKIE_DEFAULT_ID
-
-        # Set SW config: TTL error packet in (for OFPv1.2/1.3)
-        ofctl.set_sw_config_for_ttl()
 
         # Clear existing flows:
         ofctl.clear_flows()
@@ -50,7 +42,7 @@ class Router(dict):
         self.logger.info('Set ARP handling (packet in) flow [cookie=0x%x]', cookie)
 
         # Set VlanRouter for vid=None.
-        vlan_router = VlanRouter(VLANID_NONE, dp, self.port_data, logger)
+        vlan_router = VlanRouter(VLANID_NONE, self)
         self[VLANID_NONE] = vlan_router
 
         # Start cyclic routing table check.
@@ -61,6 +53,8 @@ class Router(dict):
         hub.kill(self.thread)
         self.thread.wait()
         self.logger.info('Stop cyclic routing table update.')
+        for vlan_router in self.values():
+            vlan_router.shutdown()
 
     def _get_vlan_router(self, vlan_id):
         vlan_routers = []
@@ -81,8 +75,7 @@ class Router(dict):
     def _add_vlan_router(self, vlan_id, bare=False):
         vlan_id = int(vlan_id)
         if vlan_id not in self:
-            vlan_router = VlanRouter(vlan_id, self.dp, self.port_data,
-                                     self.logger, bare)
+            vlan_router = VlanRouter(vlan_id, self, bare)
             self[vlan_id] = vlan_router
         return self[vlan_id]
 
@@ -185,10 +178,10 @@ class Router(dict):
             else:
                 self.logger.debug('Unable to parse payload packet headers; dropping packet-in.')
         except Exception as e:
-            self.logger.debug('Exception encountered during packet-in processing, possibly ' +
-                              'due to external datapath changes causing internal state inconsistency.\n' +
-                              '%s\n' + 'Internal state should regain consistency shortly.\n',
-                              traceback.format_exc())
+            self.logger.exception('Exception encountered during packet-in processing. '
+                                  'This may be a result of external datapath changes '
+                                  'causing internal state inconsistency. '
+                                  'Internal state should regain consistency shortly.')
 
     def _cyclic_update_routing_tbls(self):
         while True:
@@ -201,19 +194,21 @@ class Router(dict):
 
 
 class VlanRouter(object):
-    def __init__(self, vlan_id, dp, port_data, logger, bare=False):
+    def __init__(self, vlan_id, parent_router, bare=False):
         super(VlanRouter, self).__init__()
         self.vlan_id = vlan_id
-        self.dp = dp
-        self.sw_id = {'sw_id': dpid_lib.dpid_to_str(dp.id)}
-        self.logger = logger
+        self.parent_router = parent_router
+        self.dp = parent_router.dp
+        self.logger = parent_router.logger
+        self.port_data = parent_router.port_data
+        self.bare = bare
 
-        self.port_data = port_data
+        self.sw_id = {'sw_id': dpid_lib.dpid_to_str(self.dp.id)}
         self.address_data = AddressData()
         self.policy_routing_tbl = PolicyRoutingTable()
         self.packet_buffer = SuspendPacketList(self.send_icmp_unreach_error)
-        self.ofctl = OfCtl.factory(dp, logger)
-        self.bare = bare
+        self.penalty_box = PenaltyBoxList()
+        self.ofctl = OfCtl.factory(self.dp, self.logger)
 
         # Set default route flow:
         # 1) If bare VLAN, define packet in handler.
@@ -222,6 +217,9 @@ class VlanRouter(object):
             self._set_bare_vlan_ip_handling()
         else:
             self._set_defaultroute_drop()
+
+    def shutdown(self):
+        self.penalty_box.shutdown()
 
     def delete(self, waiters):
         # Delete flow.
@@ -239,7 +237,7 @@ class VlanRouter(object):
         if id_type == REST_VLANID:
             rest_id = cookie >> COOKIE_SHIFT_VLANID
         elif id_type == REST_ADDRESSID:
-            rest_id = cookie & UINT32_MAX
+            rest_id = cookie & UINT16_MAX
         else:
             assert id_type == REST_ROUTEID
             rest_id = (cookie & UINT32_MAX) >> COOKIE_SHIFT_ROUTEID
@@ -675,6 +673,98 @@ class VlanRouter(object):
                     break
         return relate_list
 
+    def _check_penalty_box_arp(self, msg, header_list):
+        in_port = self.ofctl.get_packetin_inport(msg)
+        dl_type = ether.ETH_TYPE_ARP
+
+        penalty_entry = next((entry
+                             for entry in self.penalty_box if ((entry.in_port == in_port) and
+                                                               (entry.dl_type == dl_type))),
+                             None)
+        if penalty_entry:
+            penalty_entry.count += 1
+            if penalty_entry.count > PENALTY_BOX_ENTRY_ARP_MAXHITS:
+                if penalty_entry.count > PENALTY_BOX_ARP_DISCONNECT_THRESHOLD:
+                    # Penalty box rule should be in place.
+                    # If we got here, the switch is buggy or misbehaving.
+                    self.logger.warning('Disconnect threshold exceeded for penalty box entry!!')
+                    self.logger.warning('Disconnecting offending datapath!!')
+                    self.dp.close()
+                    return True
+                self.logger.info('ARP PacketIn events from port [%d] '
+                                 'exceeded maximum allowed for time window.',
+                                 in_port)
+                self.logger.info('PacketIn hit count is: %d', penalty_entry.count)
+                cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
+                penalty_entry.priority = self._get_priority(PRIORITY_PENALTYBOX)
+                actions = []
+                self.ofctl.set_flow(cookie, penalty_entry.priority,
+                                    in_port=in_port,
+                                    dl_type=dl_type, dl_vlan=self.vlan_id,
+                                    hard_timeout=PENALTY_BOX_ARP_HARD_TIMEOUT,
+                                    actions=actions)
+                self.logger.info('Set penalty box flow '
+                                 '[cookie=0x%x, hard_timeout=%d]',
+                                 cookie, PENALTY_BOX_ARP_HARD_TIMEOUT)
+                return True
+        else:
+            penalty_entry = PenaltyBoxEntry(in_port=in_port,
+                                            dl_type=dl_type)
+            self.penalty_box.append(penalty_entry)
+        return False
+
+    def _check_penalty_box_ipv4(self, msg, header_list):
+        in_port = self.ofctl.get_packetin_inport(msg)
+        src_ip = header_list[IPV4].src
+        dst_ip = header_list[IPV4].dst
+        src_ip_str = ip_addr_ntoa(src_ip)
+        dst_ip_str = ip_addr_ntoa(dst_ip)
+        dl_type = ether.ETH_TYPE_IP
+
+        # Keep track of the number of hits in the penalty box.
+        penalty_entry = next((entry
+                             for entry in self.penalty_box if ((entry.in_port == in_port) and
+                                                               (entry.dl_type == dl_type) and
+                                                               (entry.src_ip == src_ip) and
+                                                               (entry.dst_ip == dst_ip))),
+                             None)
+        if penalty_entry:
+            penalty_entry.count += 1
+            if penalty_entry.count > PENALTY_BOX_ENTRY_IPV4_MAXHITS:
+                if penalty_entry.count > PENALTY_BOX_IPV4_DISCONNECT_THRESHOLD:
+                    # Penalty box rule should be in place.
+                    # If we got here, the switch is buggy or misbehaving.
+                    self.logger.warning('Disconnect threshold exceeded for penalty box entry!!')
+                    self.logger.warning('Disconnecting offending datapath!!')
+                    self.dp.close()
+                    return True
+                self.logger.info('IPv4 PacketIn events matching the following pattern '
+                                 'exceeded maximum allowed for time window: '
+                                 '[%s]->[%s] inbound on port [%d]',
+                                 src_ip_str, dst_ip_str, in_port)
+                self.logger.info('PacketIn hit count is: %d', penalty_entry.count)
+                cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
+                penalty_entry.priority = self._get_priority(PRIORITY_PENALTYBOX)
+                actions = []
+                self.ofctl.set_flow(cookie, penalty_entry.priority,
+                                    in_port=in_port,
+                                    dl_type=dl_type, dl_vlan=self.vlan_id,
+                                    nw_src=src_ip, nw_dst=dst_ip,
+                                    hard_timeout=PENALTY_BOX_IPV4_HARD_TIMEOUT,
+                                    actions=actions)
+                self.logger.info('Set penalty box flow '
+                                 '[cookie=0x%x, hard_timeout=%d]',
+                                 cookie,
+                                 PENALTY_BOX_IPV4_HARD_TIMEOUT)
+                return True
+        else:
+            penalty_entry = PenaltyBoxEntry(in_port=in_port,
+                                            dl_type=dl_type,
+                                            src_ip=src_ip,
+                                            dst_ip=dst_ip)
+            self.penalty_box.append(penalty_entry)
+        return False
+
     def packet_in_handler(self, msg, header_list):
         # Check invalid TTL (for OpenFlow V1.2/1.3)
         ofproto = self.dp.ofproto
@@ -686,10 +776,14 @@ class VlanRouter(object):
 
         # Analyze event type.
         if ARP in header_list:
+            if self._check_penalty_box_arp(msg, header_list):
+                return
             self._packetin_arp(msg, header_list)
             return
 
         if IPV4 in header_list:
+            if self._check_penalty_box_ipv4(msg, header_list):
+                return
             rt_ports = self.address_data.get_default_gw()
             if header_list[IPV4].dst in rt_ports:
                 # Packet to router's port.
@@ -709,13 +803,18 @@ class VlanRouter(object):
                 return
 
     def _packetin_arp(self, msg, header_list):
-        src_addr = self.address_data.get_data(ip=header_list[ARP].src_ip)
-        self.logger.info('Handling incoming ARP from [%s] to [%s] on VLAN [%d]',
-                         ip_addr_ntoa(header_list[ARP].src_ip),
-                         ip_addr_ntoa(header_list[ARP].dst_ip),
-                         self.vlan_id)
+        in_port = self.ofctl.get_packetin_inport(msg)
+        src_ip = header_list[ARP].src_ip
+        dst_ip = header_list[ARP].dst_ip
+        src_ip_str = ip_addr_ntoa(src_ip)
+        dst_ip_str = ip_addr_ntoa(dst_ip)
+        src_addr = self.address_data.get_data(ip=src_ip)
+        self.logger.info('Handling incoming ARP: [%s]->[%s] on VLAN [%d]',
+                         src_ip_str, dst_ip_str, self.vlan_id)
         if (src_addr is None) and (not self.bare):
-            self.logger.info('No gateway defined for subnet containing [%s]; not handling ARP.', header_list[ARP].src_ip)
+            self.logger.info('No gateway defined for subnet containing [%s]; '
+                             'not handling ARP.',
+                             header_list[ARP].src_ip)
             return
 
         # Housekeeping tasks, associated with seeing an ARP.
@@ -726,11 +825,6 @@ class VlanRouter(object):
         self._learning_host_mac(msg, header_list)
 
         # ARP packet handling.
-        in_port = self.ofctl.get_packetin_inport(msg)
-        src_ip = header_list[ARP].src_ip
-        dst_ip = header_list[ARP].dst_ip
-        srcip = ip_addr_ntoa(src_ip)
-        dstip = ip_addr_ntoa(dst_ip)
         rt_ports = self.address_data.get_default_gw()
 
         if src_ip == dst_ip:
@@ -741,7 +835,7 @@ class VlanRouter(object):
             output = self.ofctl.dp.ofproto.OFPP_ALL
             self.ofctl.send_packet_out(in_port, output, msg.data)
 
-            self.logger.info('Received GARP from [%s].', srcip)
+            self.logger.info('Received GARP from [%s].', src_ip_str)
             self.logger.info('Sending GARP (flood)')
 
         elif dst_ip not in rt_ports:
@@ -752,7 +846,7 @@ class VlanRouter(object):
                 output = self.ofctl.dp.ofproto.OFPP_ALL
                 self.ofctl.send_packet_out(in_port, output, msg.data)
 
-                self.logger.info('Received ARP from an internal host [%s].', srcip)
+                self.logger.info('Received ARP from an internal host [%s].', src_ip_str)
                 self.logger.info('Sending ARP (flood)')
         else:
             if header_list[ARP].opcode == arp.ARP_REQUEST:
@@ -770,15 +864,14 @@ class VlanRouter(object):
                                     arp_target_mac, in_port, output)
 
                 self.logger.info(('Received ARP request from [%s] ' +
-                                 'to router address [%s].'),
-                                 srcip, dstip)
+                                 'to router at [%s].'),
+                                 src_ip_str, dst_ip_str)
                 self.logger.info('Sending ARP reply to [%s] on port [%s]',
-                                 srcip, output)
-
+                                 src_ip_str, output)
             elif header_list[ARP].opcode == arp.ARP_REPLY:
                 #  ARP reply to router port -> suspend packets forward
-                log_msg = 'Received ARP reply from [%s] to router port [%s].'
-                self.logger.info(log_msg, srcip, dstip)
+                log_msg = 'Received ARP reply from [%s] to router at [%s].'
+                self.logger.info(log_msg, src_ip_str, dst_ip_str)
 
                 packet_list = self.packet_buffer.get_data(src_ip)
                 if packet_list:
@@ -792,7 +885,7 @@ class VlanRouter(object):
                         self.ofctl.send_packet_out(suspend_packet.in_port,
                                                    output,
                                                    suspend_packet.data)
-                        self.logger.info('Send suspend packet to [%s].', srcip)
+                        self.logger.info('Sent suspended packet to [%s].', src_ip_str)
 
     def _packetin_icmp_req(self, msg, header_list):
         # Send ICMP echo reply.
@@ -802,26 +895,26 @@ class VlanRouter(object):
                              icmp.ICMP_ECHO_REPLY_CODE,
                              icmp_data=header_list[ICMP].data)
 
-        srcip = ip_addr_ntoa(header_list[IPV4].src)
-        dstip = ip_addr_ntoa(header_list[IPV4].dst)
-        log_msg = 'Received ICMP echo request from [%s] to router port [%s].'
-        self.logger.info(log_msg, srcip, dstip)
-        self.logger.info('Send ICMP echo reply to [%s].', srcip)
+        src_ip_str = ip_addr_ntoa(header_list[IPV4].src)
+        dst_ip_str = ip_addr_ntoa(header_list[IPV4].dst)
+        log_msg = 'Handling incoming ICMP echo request to router: [%s]->[%s].'
+        self.logger.info(log_msg, src_ip_str, dst_ip_str)
+        self.logger.info('ICMP echo reply sent to [%s].', src_ip_str)
 
     def _packetin_icmp_reply(self, msg, header_list):
         # Deal with ICMP echo reply; primarily used for DHCP.
         in_port = self.ofctl.get_packetin_inport(msg)
 
-        srcip = ip_addr_ntoa(header_list[IPV4].src)
-        dstip = ip_addr_ntoa(header_list[IPV4].dst)
-        log_msg = 'Received ICMP echo reply from [%s] to router port [%s].'
-        self.logger.info(log_msg, srcip, dstip)
+        src_ip_str = ip_addr_ntoa(header_list[IPV4].src)
+        dst_ip_str = ip_addr_ntoa(header_list[IPV4].dst)
+        log_msg = 'Handling incoming ICMP echo reply: [%s]->[%s].'
+        self.logger.info(log_msg, src_ip_str, dst_ip_str)
 
     def _packetin_tcp_udp(self, msg, header_list):
         # Log the receipt of the packet...
-        srcip = ip_addr_ntoa(header_list[IPV4].src)
-        dstip = ip_addr_ntoa(header_list[IPV4].dst)
-        self.logger.info('Received TCP/UDP from [%s] to router port [%s].', srcip, dstip)
+        src_ip_str = ip_addr_ntoa(header_list[IPV4].src)
+        dst_ip_str = ip_addr_ntoa(header_list[IPV4].dst)
+        self.logger.info('Handling incoming TCP/UDP to router: [%s]->[%s].', src_ip_str, dst_ip_str)
 
         # ...and then send an ICMP port unreachable.
         in_port = self.ofctl.get_packetin_inport(msg)
@@ -829,18 +922,31 @@ class VlanRouter(object):
                              icmp.ICMP_DEST_UNREACH,
                              icmp.ICMP_PORT_UNREACH_CODE,
                              msg_data=msg.data)
-        self.logger.info('Sent ICMP destination unreachable to [%s] in response to TCP/UDP packet to router port [%s].', srcip, dstip)
+        log_msg = 'ICMP destination unreachable sent to [%s], in response to TCP/UDP packet directed to router at [%s].'
+        self.logger.info(log_msg, src_ip_str, dst_ip_str)
 
     def _packetin_to_node(self, msg, header_list):
-        if len(self.packet_buffer) >= MAX_SUSPENDPACKETS:
-            self.logger.info('Packet is dropped, MAX_SUSPENDPACKETS exceeded.')
+        # Log the receipt of the packet
+        in_port = self.ofctl.get_packetin_inport(msg)
+        src_ip = header_list[IPV4].src
+        dst_ip = header_list[IPV4].dst
+        src_ip_str = ip_addr_ntoa(src_ip)
+        dst_ip_str = ip_addr_ntoa(dst_ip)
+        self.logger.info('Handling incoming TCP/UDP: [%s]->[%s].', src_ip_str, dst_ip_str)
+
+        # Check to see if we've exceeded limits for suspended packets.
+        suspended_packet_list_for_ip = self.packet_buffer.get_data(dst_ip_str)
+        drop_packet = False
+        if (len(suspended_packet_list_for_ip) >= MAX_SUSPENDPACKETS_PER_IP):
+            self.logger.info('Suspended packet maximum exceeded for IP [%s]', dst_ip_str)
+            drop_packet = True
+        if (len(self.packet_buffer) >= MAX_SUSPENDPACKETS):
+            self.logger.info('Suspended packet maximum exceeded for VLAN [%d]', self.vlan_id)
+            drop_packet = True
+        if drop_packet:
+            self.logger.info('Dropping packet.')
             return
 
-        # Log the receipt of the packet
-        srcip = ip_addr_ntoa(header_list[IPV4].src)
-        dstip = ip_addr_ntoa(header_list[IPV4].dst)
-        self.logger.info('Received TCP/UDP from [%s] destined for [%s].', srcip, dstip)
-        
         # Determine if this is a DHCP packet, and send it out.
         # FIXME:
         # Check to see if the packet is a DHCP OFFER.
@@ -865,41 +971,40 @@ class VlanRouter(object):
 
             if ((header_list[DHCP].op == dhcp.DHCP_BOOT_REPLY) and flood):
                 self.logger.debug('Flooding received DHCP %s for MAC address [%s].', op_type, header_list[ETHERNET].dst)
-                in_port = self.ofctl.get_packetin_inport(msg)
                 output = self.ofctl.dp.ofproto.OFPP_ALL
                 self.ofctl.send_packet_out(in_port, output, msg.data)
 
         # Send ARP request to get node MAC address.
-        in_port = self.ofctl.get_packetin_inport(msg)
-        src_ip = None
-        dst_ip = header_list[IPV4].dst
+        arp_src_ip = None
 
         address = self.address_data.get_data(ip=dst_ip)
         if address is not None:
-            log_msg = 'Received IP packet from [%s] to an internal host [%s].'
-            self.logger.info(log_msg, srcip, dstip)
-            src_ip = address.default_gw
+            log_msg = 'Received IP packet bound for an internal host: [%s]->[%s].'
+            self.logger.info(log_msg, src_ip_str, dst_ip_str)
+            arp_src_ip = address.default_gw
         else:
-            route = self.policy_routing_tbl.get_data(dst_ip=dst_ip, src_ip=srcip)
+            route = self.policy_routing_tbl.get_data(dst_ip=dst_ip, src_ip=src_ip_str)
             if route is not None:
-                log_msg = 'Received IP packet from [%s] to [%s].'
-                self.logger.info(log_msg, srcip, dstip)
+                log_msg = 'Received IP packet intended for routing: [%s]->[%s].'
+                self.logger.info(log_msg, src_ip_str, dst_ip_str)
                 gw_address = self.address_data.get_data(ip=route.gateway_ip)
                 if gw_address is not None:
-                    src_ip = gw_address.default_gw
+                    arp_src_ip = gw_address.default_gw
                     dst_ip = route.gateway_ip
 
-        if src_ip is not None:
+        if arp_src_ip is not None:
             self.packet_buffer.add(in_port, header_list, msg.data)
-            self.send_arp_request(src_ip, dst_ip, in_port=in_port)
-            self.logger.info('Send ARP request (flood) on behalf of [%s] asking who-has [%s]', srcip, dstip)
+            self.send_arp_request(arp_src_ip, dst_ip, in_port=in_port)
+            self.logger.info('Send ARP request (flood) on behalf of [%s] asking who-has [%s]',
+                             src_ip_str, dst_ip_str)
         else:
-            self.logger.info('Could not find a viable path to destination [%s] for source [%s]', dstip, srcip)
+            self.logger.info('Could not find a viable path to destination [%s] for source [%s]',
+                             dst_ip_str, src_ip_str)
 
     def _packetin_invalid_ttl(self, msg, header_list):
         # Send ICMP TTL error.
-        srcip = ip_addr_ntoa(header_list[IPV4].src)
-        self.logger.info('Received invalid ttl packet from [%s].', srcip)
+        src_ip_str = ip_addr_ntoa(header_list[IPV4].src)
+        self.logger.info('Received invalid ttl packet from [%s].', src_ip_str)
 
         in_port = self.ofctl.get_packetin_inport(msg)
         src_ip = self._get_send_port_ip(header_list)
@@ -908,7 +1013,7 @@ class VlanRouter(object):
                                  icmp.ICMP_TIME_EXCEEDED,
                                  icmp.ICMP_TTL_EXPIRED_CODE,
                                  msg_data=msg.data, src_ip=src_ip)
-            self.logger.info('Send ICMP time exceeded to [%s].', srcip)
+            self.logger.info('Send ICMP time exceeded to [%s].', src_ip_str)
 
     def send_arp_all_gw(self):
         gateways = self.policy_routing_tbl.get_all_gateway_info()
@@ -970,7 +1075,6 @@ class VlanRouter(object):
                     cookie = self._id_to_cookie(REST_ROUTEID, value.route_id)
                     priority, log_msg = self._get_priority(PRIORITY_TYPE_ROUTE,
                                                            route=value)
-                    # VJO - dec_ttl needs to be set to False - Cisco doesn't know what to do with it.
                     self.ofctl.set_routing_flow(cookie, priority, out_port,
                                                 dl_vlan=self.vlan_id,
                                                 src_mac=dst_mac,
@@ -978,8 +1082,7 @@ class VlanRouter(object):
                                                 nw_src=value.src_ip,
                                                 src_mask=value.src_netmask,
                                                 nw_dst=value.dst_ip,
-                                                dst_mask=value.dst_netmask,
-                                                dec_ttl=False)
+                                                dst_mask=value.dst_netmask)
                     self.logger.info('Set %s flow [cookie=0x%x]', log_msg, cookie)
                     if default_route is not None:
                         if default_route.gateway_ip == value.gateway_ip:
@@ -1004,19 +1107,39 @@ class VlanRouter(object):
         src_mac = header_list[ARP].src_mac
         dst_mac = self.port_data[out_port].mac
         src_ip = header_list[ARP].src_ip
+        src_ip_str = ip_addr_ntoa(src_ip)
 
         address = self.address_data.get_data(ip=src_ip)
         if address is not None:
             cookie = self._id_to_cookie(REST_ADDRESSID, address.address_id)
             priority = self._get_priority(PRIORITY_IMPLICIT_ROUTING)
-            # VJO - dec_ttl needs to be set to False - Cisco doesn't know what to do with it.
             self.ofctl.set_routing_flow(cookie, priority,
                                         out_port, dl_vlan=self.vlan_id,
                                         src_mac=dst_mac, dst_mac=src_mac,
                                         nw_dst=src_ip,
-                                        idle_timeout=IDLE_TIMEOUT,
-                                        dec_ttl=False)
+                                        idle_timeout=IDLE_TIMEOUT)
             self.logger.info('Set implicit routing flow [cookie=0x%x]', cookie)
+            # FIXME: 
+            # Move this to a background thread; don't want to hold up the handler.
+            # Also, not working as well as hoped; need to debug.
+            #
+            # Delete any penalty box rules associated with this destination IP.
+            # Use a queue to register destination IPs for penalty box removal.
+            #matching_penalty_box_entries = [entry for entry in self.penalty_box if (entry.dst_ip == src_ip)]
+            #if matching_penalty_box_entries:
+            #    msgs = self.ofctl.get_all_flow(self.parent_router.waiters)
+            #    for msg in msgs:
+            #        for stats in msg.body:
+            #            vlan_id = VlanRouter._cookie_to_id(REST_VLANID, stats.cookie)
+            #            # Check against each entry in matching entries to see if match contains src_ip
+            #            for entry in matching_penalty_box_entries:
+            #                if entry.priority:
+            #                    if ((vlan_id == self.vlan_id) and
+            #                        (entry.priority == stats.priority) and
+            #                        (entry.dst_ip == self.ofctl.get_match_dst_ip(stats.match))):
+            #                        self.ofctl.delete_flow(stats)
+            #                        self.logger.info('Removed penalty box flow for [%s].',
+            #                                         src_ip_str)
 
     def _get_send_port_ip(self, header_list):
         try:

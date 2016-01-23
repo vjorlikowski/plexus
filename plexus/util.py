@@ -43,7 +43,8 @@ def get_priority(priority_type, vid=0, route=None):
             priority = priority_type
             log_msg = 'default routing'
 
-    if vid or priority_type == PRIORITY_IP_HANDLING:
+    if (vid or (priority_type == PRIORITY_IP_HANDLING) or
+               (priority_type == PRIORITY_PENALTYBOX)):
         priority += PRIORITY_VLAN_SHIFT
 
     if priority_type > PRIORITY_ADDRESSED_STATIC_ROUTING:

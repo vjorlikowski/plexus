@@ -50,9 +50,11 @@ class OfCtl(object):
         # Abstract method
         raise NotImplementedError()
 
-    def set_flow(self, cookie, priority, dl_type=0, dl_dst=0, dl_vlan=0,
+    def set_flow(self, cookie, priority,
+                 in_port=None, dl_type=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
-                 nw_proto=0, idle_timeout=0, actions=None):
+                 nw_proto=0, idle_timeout=0, hard_timeout=0,
+                 actions=None):
         # Abstract method
         raise NotImplementedError()
 
@@ -104,8 +106,12 @@ class OfCtl(object):
         eth = protocol_list[ETHERNET]
         e = ethernet.ethernet(eth.src, eth.dst, ether_proto)
 
+        ip = protocol_list[IPV4]
+
         if icmp_data is None and msg_data is not None:
-            ip_datagram = msg_data[offset:]
+            # Per RFC 792, only send IP header plus first 64 bits
+            send_data_len = offset + len(ip) + 8 + 1
+            ip_datagram = msg_data[offset:send_data_len]
             if icmp_type == icmp.ICMP_DEST_UNREACH:
                 icmp_data = icmp.dest_unreach(data_len=len(ip_datagram),
                                               data=ip_datagram)
@@ -115,7 +121,6 @@ class OfCtl(object):
 
         ic = icmp.icmp(icmp_type, icmp_code, csum, data=icmp_data)
 
-        ip = protocol_list[IPV4]
         if src_ip is None:
             src_ip = ip.dst
         ip_total_length = ip.header_length * 4 + ic._MIN_LEN
@@ -154,9 +159,9 @@ class OfCtl(object):
 
     def set_packetin_flow(self, cookie, priority, dl_type=0, dl_dst=0,
                           dl_vlan=0, dst_ip=0, dst_mask=32, src_ip=0, src_mask=32, nw_proto=0):
-        miss_send_len = UINT16_MAX
         actions = [self.dp.ofproto_parser.OFPActionOutput(
-            self.dp.ofproto.OFPP_CONTROLLER, miss_send_len)]
+            self.dp.ofproto.OFPP_CONTROLLER,
+            self.dp.ofproto.OFPCML_NO_BUFFER)]
         self.set_flow(cookie, priority, dl_type=dl_type, dl_dst=dl_dst,
                       dl_vlan=dl_vlan, nw_dst=dst_ip, dst_mask=dst_mask,
                       nw_src=src_ip, src_mask=src_mask, nw_proto=nw_proto, actions=actions)
@@ -208,16 +213,23 @@ class OfCtl_v1_0(OfCtl):
                                                0xff, ofp.OFPP_NONE)
         return self.send_stats_request(stats, waiters)
 
-    def set_flow(self, cookie, priority, dl_type=0, dl_dst=0, dl_vlan=0,
+    def get_match_dst_ip(self, match):
+        return match.nw_dst
+
+    def set_flow(self, cookie, priority,
+                 in_port=None, dl_type=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                  src_port=0, dst_port=0,
-                 nw_proto=0, idle_timeout=0, actions=None):
+                 nw_proto=0, idle_timeout=0, hard_timeout=0,
+                 actions=None):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
         cmd = ofp.OFPFC_ADD
 
         # Match
         wildcards = ofp.OFPFW_ALL
+        if in_port:
+            wildcards &= ~ofp.OFPFW_IN_PORT
         if dl_type:
             wildcards &= ~ofp.OFPFW_DL_TYPE
         if dl_dst:
@@ -241,20 +253,22 @@ class OfCtl_v1_0(OfCtl):
         if nw_proto:
             wildcards &= ~ofp.OFPFW_NW_PROTO
 
-        match = ofp_parser.OFPMatch(wildcards, 0, 0, dl_dst, dl_vlan, 0,
+        match = ofp_parser.OFPMatch(wildcards, in_port, 0, dl_dst, dl_vlan, 0,
                                     dl_type, 0, nw_proto,
                                     nw_src, nw_dst, src_port, dst_port)
         actions = actions or []
 
         m = ofp_parser.OFPFlowMod(self.dp, match, cookie, cmd,
-                                  idle_timeout=idle_timeout,
+                                  idle_timeout=idle_timeout, hard_timeout=hard_timeout,
                                   priority=priority, actions=actions)
         self.dp.send_msg(m)
 
-    def set_routing_flow(self, cookie, priority, outport, dl_vlan=0,
+    def set_routing_flow(self, cookie, priority, outport,
+                         in_port=None, dl_vlan=0,
                          nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                          src_port=0, dst_port=0, src_mac=0, dst_mac=0,
-                         nw_proto=0, idle_timeout=0, **dummy):
+                         nw_proto=0, idle_timeout=0, hard_timeout=0,
+                         **dummy):
         ofp_parser = self.dp.ofproto_parser
 
         dl_type = ether.ETH_TYPE_IP
@@ -270,12 +284,14 @@ class OfCtl_v1_0(OfCtl):
         if outport is not None:
             actions.append(ofp_parser.OFPActionOutput(outport))
 
-        self.set_flow(cookie, priority, dl_type=dl_type, dl_vlan=dl_vlan,
+        self.set_flow(cookie, priority,
+                      in_port=in_port, dl_type=dl_type, dl_vlan=dl_vlan,
                       nw_src=nw_src, src_mask=src_mask,
                       nw_dst=nw_dst, dst_mask=dst_mask,
                       src_port=src_port, dst_port=dst_port,
                       nw_proto=nw_proto,
-                      idle_timeout=idle_timeout, actions=actions)
+                      idle_timeout=idle_timeout, hard_timeout=hard_timeout,
+                      actions=actions)
 
     def delete_flow(self, flow_stats):
         match = flow_stats.match
@@ -317,10 +333,15 @@ class OfCtl_after_v1_2(OfCtl):
     def get_all_flow(self, waiters):
         pass
 
-    def set_flow(self, cookie, priority, dl_type=0, dl_dst=0, dl_vlan=0,
+    def get_match_dst_ip(self, match):
+        return match.ipv4_dst
+
+    def set_flow(self, cookie, priority,
+                 in_port=None, dl_type=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                  src_port=0, dst_port=0,
-                 nw_proto=0, idle_timeout=0, actions=None):
+                 nw_proto=0, idle_timeout=0, hard_timeout=0,
+                 actions=None):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
         cmd = ofp.OFPFC_ADD
@@ -329,6 +350,8 @@ class OfCtl_after_v1_2(OfCtl):
 
         # Match
         match = ofp_parser.OFPMatch()
+        if in_port:
+            match.set_in_port(in_port)
         if dl_type:
             match.set_dl_type(dl_type)
             if dl_type == ether.ETH_TYPE_IP:
@@ -375,15 +398,18 @@ class OfCtl_after_v1_2(OfCtl):
         inst = [ofp_parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS,
                                                  actions)]
 
-        m = ofp_parser.OFPFlowMod(self.dp, cookie, 0, table_id, cmd, idle_timeout,
-                                  0, priority, UINT32_MAX, ofp.OFPP_ANY,
+        m = ofp_parser.OFPFlowMod(self.dp, cookie, 0, table_id, cmd,
+                                  idle_timeout, hard_timeout,
+                                  priority, UINT32_MAX, ofp.OFPP_ANY,
                                   ofp.OFPG_ANY, 0, match, inst)
         self.dp.send_msg(m)
 
-    def set_routing_flow(self, cookie, priority, outport, dl_vlan=0,
+    def set_routing_flow(self, cookie, priority, outport,
+                         in_port=None, dl_vlan=0,
                          nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                          src_port=0, dst_port=0, src_mac=0, dst_mac=0,
-                         nw_proto=0, idle_timeout=0, dec_ttl=False):
+                         nw_proto=0, idle_timeout=0, hard_timeout=0,
+                         dec_ttl=False):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
 
@@ -399,12 +425,14 @@ class OfCtl_after_v1_2(OfCtl):
         if outport is not None:
             actions.append(ofp_parser.OFPActionOutput(outport, 0))
 
-        self.set_flow(cookie, priority, dl_type=dl_type, dl_vlan=dl_vlan,
+        self.set_flow(cookie, priority,
+                      in_port=in_port, dl_type=dl_type, dl_vlan=dl_vlan,
                       nw_src=nw_src, src_mask=src_mask,
                       nw_dst=nw_dst, dst_mask=dst_mask,
                       src_port=src_port, dst_port=dst_port,
                       nw_proto=nw_proto,
-                      idle_timeout=idle_timeout, actions=actions)
+                      idle_timeout=idle_timeout, hard_timeout=hard_timeout,
+                      actions=actions)
 
     def delete_flow(self, flow_stats):
         ofp = self.dp.ofproto

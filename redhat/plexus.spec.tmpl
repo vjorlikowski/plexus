@@ -54,7 +54,11 @@ mkdir -p %{_builddir}%{venv_dir}
 virtualenv %{_builddir}%{venv_dir}
 
 # Install dependencies and application support.
-%{_builddir}%{venv_dir}/bin/pip install cffi==1.2.1
+%{_builddir}%{venv_dir}/bin/pip install cffi==1.5.0
+%{_builddir}%{venv_dir}/bin/pip install six==1.4.1
+%{_builddir}%{venv_dir}/bin/pip install pyasn1==0.1.9
+%{_builddir}%{venv_dir}/bin/pip install enum34==1.1.2
+%{_builddir}%{venv_dir}/bin/pip install cryptography==0.7
 %{_builddir}%{venv_dir}/bin/pip install pyOpenSSL==0.15.1
 %{_builddir}%{venv_dir}/bin/pip install paramiko==1.15.2
 %{_builddir}%{venv_dir}/bin/pip install urllib3==1.11
@@ -66,7 +70,7 @@ virtualenv %{_builddir}%{venv_dir}
 %{_builddir}%{venv_dir}/bin/pip install oslo.config==2.3.0
 
 # Finally, install Ryu.
-%{_builddir}%{venv_dir}/bin/pip install ryu==3.26
+%{_builddir}%{venv_dir}/bin/pip install ryu==3.29
 
 # Now, to move things into place.
 mkdir -p %{_builddir}%{venv_dir}
