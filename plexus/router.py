@@ -177,7 +177,7 @@ class Router(dict):
                     self.logger.debug('Drop unknown vlan packet. [vlan_id=%d]', vlan_id)
             else:
                 self.logger.debug('Unable to parse payload packet headers; dropping packet-in.')
-        except Exception as e:
+        except:
             self.logger.exception('Exception encountered during packet-in processing. '
                                   'This may be a result of external datapath changes '
                                   'causing internal state inconsistency. '
