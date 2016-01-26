@@ -117,11 +117,17 @@ class OfCtl(object):
             # RFC 4884 also states that the length field is interpreted in
             # 32 bit units, so the length calculated in bytes needs to first
             # be divided by 4, then increased by 1 if the modulus is non-zero.
+            #
+            # Finally, RFC 4884 says, if we're specifying the length, we MUST
+            # zero pad to the next 32 bit boundary.
             end_of_data = offset + len(ip) + 128 + 1
-            ip_datagram = msg_data[offset:end_of_data]
+            ip_datagram = bytearray()
+            ip_datagram += msg_data[offset:end_of_data]
             data_len = int(len(ip_datagram) / 4)
-            if int(len(ip_datagram) % 4):
+            length_modulus = int(len(ip_datagram) % 4)
+            if length_modulus:
                 data_len += 1
+                ip_datagram += bytearray([0]*(4 - length_modulus))
             if icmp_type == icmp.ICMP_DEST_UNREACH:
                 icmp_data = icmp.dest_unreach(data_len=data_len,
                                               data=ip_datagram)
