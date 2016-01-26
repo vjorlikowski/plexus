@@ -109,14 +109,24 @@ class OfCtl(object):
         ip = protocol_list[IPV4]
 
         if icmp_data is None and msg_data is not None:
-            # Per RFC 792, only send IP header plus first 64 bits
-            send_data_len = offset + len(ip) + 8 + 1
-            ip_datagram = msg_data[offset:send_data_len]
+            # RFC 4884 says that we should send "at least 128 octets"
+            # if we are using the ICMP Extension Structure.
+            # We're not using the extension structure, but let's send
+            # up to 128 bytes of the original msg_data.
+            #
+            # RFC 4884 also states that the length field is interpreted in
+            # 32 bit units, so the length calculated in bytes needs to first
+            # be divided by 4, then increased by 1 if the modulus is non-zero.
+            end_of_data = offset + len(ip) + 128 + 1
+            ip_datagram = msg_data[offset:end_of_data]
+            data_len = int(len(ip_datagram) / 4)
+            if int(len(ip_datagram) % 4):
+                data_len += 1
             if icmp_type == icmp.ICMP_DEST_UNREACH:
-                icmp_data = icmp.dest_unreach(data_len=len(ip_datagram),
+                icmp_data = icmp.dest_unreach(data_len=data_len,
                                               data=ip_datagram)
             elif icmp_type == icmp.ICMP_TIME_EXCEEDED:
-                icmp_data = icmp.TimeExceeded(data_len=len(ip_datagram),
+                icmp_data = icmp.TimeExceeded(data_len=data_len,
                                               data=ip_datagram)
 
         ic = icmp.icmp(icmp_type, icmp_code, csum, data=icmp_data)
