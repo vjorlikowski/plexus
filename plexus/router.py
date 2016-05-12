@@ -208,6 +208,7 @@ class VlanRouter(object):
         self.policy_routing_tbl = PolicyRoutingTable()
         self.packet_buffer = SuspendPacketList(self.send_icmp_unreach_error)
         self.penalty_box = PenaltyBoxList()
+        self.mac_table = MACAddressTable()
         self.ofctl = OfCtl.factory(self.dp, self.logger)
 
         # Set default route flow:
@@ -220,6 +221,7 @@ class VlanRouter(object):
 
     def shutdown(self):
         self.penalty_box.shutdown()
+        self.mac_table.shutdown()
 
     def delete(self, waiters):
         # Delete flow.
@@ -424,7 +426,8 @@ class VlanRouter(object):
         else:
             src_ip = address.default_gw
             route = self.policy_routing_tbl.add(destination, dest_vlan, gateway, requested_address)
-            self._set_route_packetin(route)
+            # FIXME: Remove? Seems to be causing problems!
+            # self._set_route_packetin(route)
             self.send_arp_request(src_ip, dst_ip)
             return route.route_id
 
@@ -765,6 +768,15 @@ class VlanRouter(object):
             self.penalty_box.append(penalty_entry)
         return False
 
+    def _learn_src_mac(self, msg, header_list):
+        in_port = self.ofctl.get_packetin_inport(msg)
+        src_mac = header_list[ETHERNET].src
+        if ((src_mac != mac_lib.BROADCAST_STR) and
+            (src_mac != mac_lib.DONTCARE_STR) and
+            (src_mac != mac_lib.MULTICAST) and
+            (src_mac != mac_lib.UNICAST)):
+            self.mac_table[src_mac] = MACAddressEntry(in_port)
+
     def packet_in_handler(self, msg, header_list):
         # Check invalid TTL (for OpenFlow V1.2/1.3)
         ofproto = self.dp.ofproto
@@ -776,12 +788,14 @@ class VlanRouter(object):
 
         # Analyze event type.
         if ARP in header_list:
+            self._learn_src_mac(msg, header_list)
             if self._check_penalty_box_arp(msg, header_list):
                 return
             self._packetin_arp(msg, header_list)
             return
 
         if IPV4 in header_list:
+            self._learn_src_mac(msg, header_list)
             if self._check_penalty_box_ipv4(msg, header_list):
                 return
             rt_ports = self.address_data.get_default_gw()
@@ -821,8 +835,12 @@ class VlanRouter(object):
         # 1) Update the routing tables.
         # 2) Learn the MAC of the host.
         # FIXME: what happens here, if someone is ARP spoofing?!?
-        self._update_routing_tbls(msg, header_list)
+        if not self.bare:
+            self._update_routing_tbls(msg, header_list)
         self._learning_host_mac(msg, header_list)
+
+        # Fetch requested destination MAC out of headers
+        packet_dst_mac = header_list[ARP].dst_mac
 
         # ARP packet handling.
         rt_ports = self.address_data.get_default_gw()
@@ -832,7 +850,7 @@ class VlanRouter(object):
             # FIXME: Is there anything that can be done to mitigate a malicious GARP?
             # Answer: check proteus before sending it - but that only works if someone isn't MAC spoofing too...
             # That said - in the MAC spoofing case - the grat ARP is *not* a problem.
-            output = self.ofctl.dp.ofproto.OFPP_ALL
+            output = self.dp.ofproto.OFPP_ALL
             self.ofctl.send_packet_out(in_port, output, msg.data)
 
             self.logger.info('Received GARP from [%s].', src_ip_str)
@@ -843,11 +861,18 @@ class VlanRouter(object):
             if (dst_addr is not None and
                     src_addr.address_id == dst_addr.address_id) or self.bare:
                 # ARP from internal host -> ALL (in the same address range, which must be defined)
-                output = self.ofctl.dp.ofproto.OFPP_ALL
+                output = self.dp.ofproto.OFPP_ALL
+                mac_entry = self.mac_table.get(packet_dst_mac)
+                if mac_entry:
+                    output = mac_entry.port
                 self.ofctl.send_packet_out(in_port, output, msg.data)
 
                 self.logger.info('Received ARP from an internal host [%s].', src_ip_str)
-                self.logger.info('Sending ARP (flood)')
+                if mac_entry:
+                    self.logger.info('Sent ARP to learned port [%s] for MAC [%s]',
+                                     output, packet_dst_mac)
+                else:
+                    self.logger.info('Sending ARP (flood)')
         else:
             if header_list[ARP].opcode == arp.ARP_REQUEST:
                 # ARP request to router port -> send ARP reply
@@ -855,7 +880,7 @@ class VlanRouter(object):
                 dst_mac = self.port_data[in_port].mac
                 arp_target_mac = dst_mac
                 output = in_port
-                in_port = self.ofctl.dp.ofproto.OFPP_CONTROLLER
+                in_port = self.dp.ofproto.OFPP_CONTROLLER
 
                 dst_vlan = self.vlan_id
 
@@ -880,7 +905,7 @@ class VlanRouter(object):
                         self.packet_buffer.delete(pkt=suspend_packet)
 
                     # send suspend packet.
-                    output = self.ofctl.dp.ofproto.OFPP_TABLE
+                    output = self.dp.ofproto.OFPP_TABLE
                     for suspend_packet in packet_list:
                         self.ofctl.send_packet_out(suspend_packet.in_port,
                                                    output,
@@ -971,35 +996,59 @@ class VlanRouter(object):
 
             if ((header_list[DHCP].op == dhcp.DHCP_BOOT_REPLY) and flood):
                 self.logger.debug('Flooding received DHCP %s for MAC address [%s].', op_type, header_list[ETHERNET].dst)
-                output = self.ofctl.dp.ofproto.OFPP_ALL
+                output = self.dp.ofproto.OFPP_ALL
                 self.ofctl.send_packet_out(in_port, output, msg.data)
 
-        # Send ARP request to get node MAC address.
-        arp_src_ip = None
+        
+        if self.bare:
+            src_mac = header_list[ETHERNET].src
+            dst_mac = header_list[ETHERNET].dst
+            out_port = self.dp.ofproto.OFPP_ALL
 
-        address = self.address_data.get_data(ip=dst_ip)
-        if address is not None:
-            log_msg = 'Received IP packet bound for an internal host: [%s]->[%s].'
-            self.logger.info(log_msg, src_ip_str, dst_ip_str)
-            arp_src_ip = address.default_gw
+            mac_entry = self.mac_table.get(dst_mac)
+            if mac_entry:
+                out_port = mac_entry.port
+
+            if (out_port != self.dp.ofproto.OFPP_ALL):
+                actions = [self.dp.ofproto_parser.OFPActionOutput(out_port)]
+                cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
+                priority = self._get_priority(PRIORITY_IMPLICIT_ROUTING)
+                self.ofctl.set_flow(cookie, priority,
+                                    in_port=in_port,
+                                    dl_type=ether.ETH_TYPE_IP,
+                                    dl_src=mac_lib.haddr_to_bin(src_mac),
+                                    dl_dst=mac_lib.haddr_to_bin(dst_mac),
+                                    dl_vlan=self.vlan_id,
+                                    idle_timeout=L2_IDLE_TIMEOUT,
+                                    actions=actions)
+            self.ofctl.send_packet_out(in_port, out_port, msg.data)
         else:
-            route = self.policy_routing_tbl.get_data(dst_ip=dst_ip, src_ip=src_ip_str)
-            if route is not None:
-                log_msg = 'Received IP packet intended for routing: [%s]->[%s].'
+            # Send ARP request to get node MAC address.
+            arp_src_ip = None
+
+            address = self.address_data.get_data(ip=dst_ip)
+            if address is not None:
+                log_msg = 'Received IP packet bound for an internal host: [%s]->[%s].'
                 self.logger.info(log_msg, src_ip_str, dst_ip_str)
-                gw_address = self.address_data.get_data(ip=route.gateway_ip)
-                if gw_address is not None:
-                    arp_src_ip = gw_address.default_gw
-                    dst_ip = route.gateway_ip
+                arp_src_ip = address.default_gw
+            else:
+                route = self.policy_routing_tbl.get_data(dst_ip=dst_ip, src_ip=src_ip_str)
+                if route is not None:
+                    log_msg = 'Received IP packet intended for routing: [%s]->[%s].'
+                    self.logger.info(log_msg, src_ip_str, dst_ip_str)
+                    gw_address = self.address_data.get_data(ip=route.gateway_ip)
+                    if gw_address is not None:
+                        arp_src_ip = gw_address.default_gw
+                        dst_ip = route.gateway_ip
 
-        if arp_src_ip is not None:
-            self.packet_buffer.add(in_port, header_list, msg.data)
-            self.send_arp_request(arp_src_ip, dst_ip, in_port=in_port)
-            self.logger.info('Send ARP request (flood) on behalf of [%s] asking who-has [%s]',
-                             src_ip_str, dst_ip_str)
-        else:
-            self.logger.info('Could not find a viable path to destination [%s] for source [%s]',
-                             dst_ip_str, src_ip_str)
+            if arp_src_ip is not None:
+                self.packet_buffer.add(in_port, header_list, msg.data)
+                self.send_arp_request(arp_src_ip, dst_ip, in_port=in_port)
+                self.logger.info('Send ARP request (flood) on behalf of [%s] asking who-has [%s]',
+                                 src_ip_str, dst_ip_str)
+            else:
+                self.logger.info('Could not find a viable path to destination [%s] for source [%s]',
+                                 dst_ip_str, src_ip_str)
 
     def _packetin_invalid_ttl(self, msg, header_list):
         # Send ICMP TTL error.
@@ -1029,7 +1078,7 @@ class VlanRouter(object):
                 src_mac = send_port.mac
                 dst_mac = mac_lib.BROADCAST_STR
                 arp_target_mac = mac_lib.DONTCARE_STR
-                inport = self.ofctl.dp.ofproto.OFPP_CONTROLLER
+                inport = self.dp.ofproto.OFPP_CONTROLLER
                 output = send_port.port_no
                 self.ofctl.send_arp(arp.ARP_REQUEST, self.vlan_id,
                                     src_mac, dst_mac, src_ip, dst_ip,
@@ -1059,8 +1108,12 @@ class VlanRouter(object):
         # Set flow: routing to gateway.
         out_port = self.ofctl.get_packetin_inport(msg)
         src_mac = header_list[ARP].src_mac
-        dst_mac = self.port_data[out_port].mac
         src_ip = header_list[ARP].src_ip
+
+        dst_port_data = self.port_data.get(out_port)
+        if not dst_port_data:
+            return
+        dst_mac = dst_port_data.mac
 
         default_route = self.policy_routing_tbl.get_data(dst_ip=INADDR_ANY_BASE, src_ip=src_ip)
         gateway_flg = False
@@ -1105,9 +1158,13 @@ class VlanRouter(object):
         # Set flow: routing to internal Host.
         out_port = self.ofctl.get_packetin_inport(msg)
         src_mac = header_list[ARP].src_mac
-        dst_mac = self.port_data[out_port].mac
         src_ip = header_list[ARP].src_ip
         src_ip_str = ip_addr_ntoa(src_ip)
+
+        dst_port_data = self.port_data.get(out_port)
+        if not dst_port_data:
+            return
+        dst_mac = dst_port_data.mac
 
         address = self.address_data.get_data(ip=src_ip)
         if address is not None:
@@ -1117,7 +1174,7 @@ class VlanRouter(object):
                                         out_port, dl_vlan=self.vlan_id,
                                         src_mac=dst_mac, dst_mac=src_mac,
                                         nw_dst=src_ip,
-                                        idle_timeout=IDLE_TIMEOUT)
+                                        idle_timeout=L3_IDLE_TIMEOUT)
             self.logger.info('Set implicit routing flow [cookie=0x%x]', cookie)
             # FIXME: 
             # Move this to a background thread; don't want to hold up the handler.

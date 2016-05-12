@@ -84,6 +84,11 @@ PENALTY_BOX_IPV4_DISCONNECT_THRESHOLD = (PENALTY_BOX_ENTRY_IPV4_MAXHITS * 2)
 # Hard timeout for IPv4 matching penalty box rules, in seconds.
 PENALTY_BOX_IPV4_HARD_TIMEOUT = 15
 
+# Time, in seconds, that a cached MAC address should be retained after last update
+MAC_ADDRESS_TTL = 300
+# Time, in seconds, between MAC address table garbage collections
+MAC_ADDRESS_GC_INTERVAL = 15
+
 ARP_REPLY_TIMER = 10  # sec
 OFP_REPLY_TIMER = 1.0  # sec
 CHK_ROUTING_TBL_INTERVAL = 30  # Seconds before cyclically checking reachability of all switch-defined routers
@@ -110,7 +115,8 @@ INADDR_BROADCAST_BASE = '255.255.255.255'
 INADDR_BROADCAST_MASK = '32'
 INADDR_BROADCAST = INADDR_BROADCAST_BASE + '/' + INADDR_BROADCAST_MASK
 
-IDLE_TIMEOUT = 300  # sec
+L2_IDLE_TIMEOUT = 90   # sec
+L3_IDLE_TIMEOUT = 180  # sec
 DEFAULT_TTL = 64
 
 REST_COMMAND_RESULT = 'command_result'
@@ -149,6 +155,8 @@ PRIORITY_IP_HANDLING = 7
 PRIORITY_PENALTYBOX = 8
 
 PRIORITY_TYPE_ROUTE = 'priority_route'
+
+SWITCHBOARD_REPLY_TIMEOUT = 10
 
 CONF = cfg.CONF
 plexus_configuration_group = 'plexus'

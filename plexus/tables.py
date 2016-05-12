@@ -11,6 +11,8 @@
 # following authors:
 # Author: Victor J. Orlikowski <vjo@duke.edu>
 
+import time
+
 from plexus import *
 from plexus.util import *
 
@@ -310,6 +312,7 @@ class PenaltyBoxList(list):
                 entry.count -= PENALTY_BOX_DRAIN_AMOUNT
                 if (entry.count <= 0):
                     self.remove(entry)
+                hub.sleep(0)
             hub.sleep(PENALTY_BOX_CHECK_INTERVAL)
 
 
@@ -322,3 +325,29 @@ class PenaltyBoxEntry(object):
         self.dst_ip = dst_ip
         self.count = 1
         self.priority = None # Unset, until a rule is inserted.
+
+
+class MACAddressTable(dict):
+    def __init__(self):
+        super(MACAddressTable, self).__init__()
+        self._expiry_thread = hub.spawn(self._expire_loop)
+
+    def shutdown(self):
+        hub.kill(self._expiry_thread)
+        self._expiry_thread.wait()
+
+    def _expire_loop(self):
+        while True:
+            current_time = time.time()
+            for mac, entry in self.items():
+                if (entry.expire_time < current_time):
+                    del self[mac]
+                hub.sleep(0)
+            hub.sleep(MAC_ADDRESS_GC_INTERVAL)
+
+
+class MACAddressEntry(object):
+    def __init__(self, port):
+        super(MACAddressEntry, self).__init__()
+        self.port = port
+        self.expire_time = (time.time() + MAC_ADDRESS_TTL)

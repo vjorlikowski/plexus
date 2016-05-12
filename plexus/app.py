@@ -170,7 +170,7 @@ class PlexusController(ControllerBase):
         try:
             urllib3.contrib.pyopenssl.inject_into_urllib3()
             payload = {'rest_caller_id': CONF.switchboard.username, 'rest_caller_pw': CONF.switchboard.password}
-            r = requests.get(CONF.switchboard.state_url, params=payload)
+            r = requests.get(CONF.switchboard.state_url, params=payload, timeout=SWITCHBOARD_REPLY_TIMEOUT)
         except:
             logger.error('Error in retrieving Switchboard configuration!')
             return

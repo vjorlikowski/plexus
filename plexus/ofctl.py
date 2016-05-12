@@ -51,10 +51,11 @@ class OfCtl(object):
         raise NotImplementedError()
 
     def set_flow(self, cookie, priority,
-                 in_port=None, dl_type=0, dl_dst=0, dl_vlan=0,
+                 in_port=None,
+                 dl_type=0, dl_src=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                  nw_proto=0, idle_timeout=0, hard_timeout=0,
-                 actions=None):
+                 flags=0, actions=None):
         # Abstract method
         raise NotImplementedError()
 
@@ -120,7 +121,7 @@ class OfCtl(object):
             #
             # Finally, RFC 4884 says, if we're specifying the length, we MUST
             # zero pad to the next 32 bit boundary.
-            end_of_data = offset + len(ip) + 128 + 1
+            end_of_data = offset + len(ip) + 128
             ip_datagram = bytearray()
             ip_datagram += msg_data[offset:end_of_data]
             data_len = int(len(ip_datagram) / 4)
@@ -233,11 +234,12 @@ class OfCtl_v1_0(OfCtl):
         return match.nw_dst
 
     def set_flow(self, cookie, priority,
-                 in_port=None, dl_type=0, dl_dst=0, dl_vlan=0,
+                 in_port=None,
+                 dl_type=0, dl_src=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                  src_port=0, dst_port=0,
                  nw_proto=0, idle_timeout=0, hard_timeout=0,
-                 actions=None):
+                 flags=0, actions=None):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
         cmd = ofp.OFPFC_ADD
@@ -248,6 +250,8 @@ class OfCtl_v1_0(OfCtl):
             wildcards &= ~ofp.OFPFW_IN_PORT
         if dl_type:
             wildcards &= ~ofp.OFPFW_DL_TYPE
+        if dl_src:
+            wildcards &= ~ofp.OFPFW_DL_SRC
         if dl_dst:
             wildcards &= ~ofp.OFPFW_DL_DST
         if dl_vlan:
@@ -269,14 +273,15 @@ class OfCtl_v1_0(OfCtl):
         if nw_proto:
             wildcards &= ~ofp.OFPFW_NW_PROTO
 
-        match = ofp_parser.OFPMatch(wildcards, in_port, 0, dl_dst, dl_vlan, 0,
+        match = ofp_parser.OFPMatch(wildcards, in_port, dl_src, dl_dst, dl_vlan, 0,
                                     dl_type, 0, nw_proto,
                                     nw_src, nw_dst, src_port, dst_port)
+        flags = flags
         actions = actions or []
 
         m = ofp_parser.OFPFlowMod(self.dp, match, cookie, cmd,
                                   idle_timeout=idle_timeout, hard_timeout=hard_timeout,
-                                  priority=priority, actions=actions)
+                                  priority=priority, flags=flags, actions=actions)
         self.dp.send_msg(m)
 
     def set_routing_flow(self, cookie, priority, outport,
@@ -288,6 +293,8 @@ class OfCtl_v1_0(OfCtl):
         ofp_parser = self.dp.ofproto_parser
 
         dl_type = ether.ETH_TYPE_IP
+        flags = self.dp.ofproto.OFPFF_CHECK_OVERLAP
+        #flags = 0
 
         # Decrement TTL value is not supported at OpenFlow V1.0
         actions = []
@@ -307,7 +314,7 @@ class OfCtl_v1_0(OfCtl):
                       src_port=src_port, dst_port=dst_port,
                       nw_proto=nw_proto,
                       idle_timeout=idle_timeout, hard_timeout=hard_timeout,
-                      actions=actions)
+                      flags=flags, actions=actions)
 
     def delete_flow(self, flow_stats):
         match = flow_stats.match
@@ -353,11 +360,12 @@ class OfCtl_after_v1_2(OfCtl):
         return match.ipv4_dst
 
     def set_flow(self, cookie, priority,
-                 in_port=None, dl_type=0, dl_dst=0, dl_vlan=0,
+                 in_port=None,
+                 dl_type=0, dl_src=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                  src_port=0, dst_port=0,
                  nw_proto=0, idle_timeout=0, hard_timeout=0,
-                 actions=None):
+                 flags=0, actions=None):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
         cmd = ofp.OFPFC_ADD
@@ -372,8 +380,12 @@ class OfCtl_after_v1_2(OfCtl):
             match.set_dl_type(dl_type)
             if dl_type == ether.ETH_TYPE_IP:
                 table_id = 1
+        if dl_src:
+            match.set_dl_src(dl_src)
+            table_id = 0
         if dl_dst:
             match.set_dl_dst(dl_dst)
+            table_id = 0
         if dl_vlan:
             match.set_vlan_vid(dl_vlan)
         if nw_src:
@@ -410,6 +422,7 @@ class OfCtl_after_v1_2(OfCtl):
             table_id = 0
 
         # Instructions
+        flags = flags
         actions = actions or []
         inst = [ofp_parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS,
                                                  actions)]
@@ -417,7 +430,7 @@ class OfCtl_after_v1_2(OfCtl):
         m = ofp_parser.OFPFlowMod(self.dp, cookie, 0, table_id, cmd,
                                   idle_timeout, hard_timeout,
                                   priority, UINT32_MAX, ofp.OFPP_ANY,
-                                  ofp.OFPG_ANY, 0, match, inst)
+                                  ofp.OFPG_ANY, flags, match, inst)
         self.dp.send_msg(m)
 
     def set_routing_flow(self, cookie, priority, outport,
@@ -430,6 +443,8 @@ class OfCtl_after_v1_2(OfCtl):
         ofp_parser = self.dp.ofproto_parser
 
         dl_type = ether.ETH_TYPE_IP
+        flags = self.dp.ofproto.OFPFF_CHECK_OVERLAP
+        #flags = 0
 
         actions = []
         if dec_ttl:
@@ -448,7 +463,7 @@ class OfCtl_after_v1_2(OfCtl):
                       src_port=src_port, dst_port=dst_port,
                       nw_proto=nw_proto,
                       idle_timeout=idle_timeout, hard_timeout=hard_timeout,
-                      actions=actions)
+                      flags=flags, actions=actions)
 
     def delete_flow(self, flow_stats):
         ofp = self.dp.ofproto
