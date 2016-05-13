@@ -23,6 +23,8 @@ LOCKFILE=/var/lock/subsys/${NAME}
 # pull in sysconfig settings
 [ -f /etc/sysconfig/${NAME} ] && . /etc/sysconfig/${NAME}
 
+source /opt/rh/python27/enable
+
 start() {
     echo -n $"Starting $NAME: "
     (${BASEDIR}/supervisord -c ${CONFDIR}/supervisord.conf 2>/dev/null) && success || failure

@@ -6,6 +6,7 @@
 %{!?python_sitearch: %global python_sitearch %(%{__python} -c "from distutils.sysconfig import get_python_lib; print get_python_lib(1)")}
 %endif
 %define use_systemd (0%{?fedora} && 0%{?fedora} >= 18) || (0%{?rhel} && 0%{?rhel} >= 7) || (0%{?suse_version} && 0%{?suse_version} >=1210)
+%define __prelink_undo_cmd %{nil}
 
 Name:      plexus
 Version:   0.1
@@ -18,8 +19,8 @@ URL:       https://gitlab.oit.duke.edu/vjo/plexus
 Source:    %{name}-%{commit}.tgz
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
 
-BuildRequires: python python-virtualenv python-pip python-setuptools gcc libxslt-devel
-Requires: python
+BuildRequires: python27-python python27-python-virtualenv python27-python-setuptools gcc libxslt-devel
+Requires: python27-python
 Requires(pre): shadow-utils
 
 %if %{use_systemd}
@@ -37,6 +38,8 @@ Requires(preun):    chkconfig
 
 # Disable debuginfo packaging...
 %global debug_package %{nil}
+# And disable re-compilation of python bytecode.
+%global __os_install_post %(echo '%{__os_install_post}' | sed -e 's!/usr/lib[^[:space:]]*/brp-python-bytecompile[[:space:]].*$!!g')
 
 %description
 Plexus is a Ryu OpenFlow controller application.
@@ -51,34 +54,53 @@ if [ -d %{_builddir}%{venv_dir} ]; then
     rm -rf %{_builddir}%{venv_dir}
 fi
 mkdir -p %{_builddir}%{venv_dir}
+source /opt/rh/python27/enable
 virtualenv %{_builddir}%{venv_dir}
 
+# Sigh. Cert errors break the installed pip in the virtualenv.
+# Grab the latest pip, and install it in the virtual env.
+(
+source %{_builddir}%{venv_dir}/bin/activate
+curl -O https://bootstrap.pypa.io/get-pip.py
+python get-pip.py --no-setuptools --no-wheel
+)
+
 # Install dependencies and application support.
-%{_builddir}%{venv_dir}/bin/pip install setuptools==18.0.1
-%{_builddir}%{venv_dir}/bin/pip install cffi==1.5.0
-%{_builddir}%{venv_dir}/bin/pip install six==1.4.1
-%{_builddir}%{venv_dir}/bin/pip install pyasn1==0.1.9
-%{_builddir}%{venv_dir}/bin/pip install enum34==1.1.2
-%{_builddir}%{venv_dir}/bin/pip install cryptography==0.7
-%{_builddir}%{venv_dir}/bin/pip install pyOpenSSL==0.15.1
-%{_builddir}%{venv_dir}/bin/pip install paramiko==1.15.2
-%{_builddir}%{venv_dir}/bin/pip install urllib3==1.11
-%{_builddir}%{venv_dir}/bin/pip install requests==2.7.0
-%{_builddir}%{venv_dir}/bin/pip install ndg-httpsclient==0.4.0
-%{_builddir}%{venv_dir}/bin/pip install lxml==3.4.4
-%{_builddir}%{venv_dir}/bin/pip install supervisor==3.1.3 --pre
-%{_builddir}%{venv_dir}/bin/pip install pbr==1.8.0
-%{_builddir}%{venv_dir}/bin/pip install oslo.config==2.3.0
+(
+source %{_builddir}%{venv_dir}/bin/activate
+pip install setuptools==21.0.0
+pip install pycparser==2.14
+pip install cffi==1.6.0
+pip install six==1.10.0
+pip install pyasn1==0.1.9
+pip install enum34==1.1.5
+pip install idna==2.1
+pip install ipaddress==1.0.16
+pip install cryptography==1.3.2
+pip install pyOpenSSL==16.0.0
+pip install urllib3==1.15.1
+pip install ndg-httpsclient==0.4.0
+pip install paramiko==2.0.0
+pip install requests==2.10.0
+pip install lxml==3.6.0
+pip install supervisor==3.2.3 --pre
+pip install pbr==1.9.1
+pip install oslo.config==3.4.0
+)
 
-# Finally, install Ryu.
-%{_builddir}%{venv_dir}/bin/pip install ryu==3.29
+# Install Ryu.
+(
+source %{_builddir}%{venv_dir}/bin/activate
+pip install ryu==4.2
+)
 
-# Now, to move things into place.
-mkdir -p %{_builddir}%{venv_dir}
+# And now for the plexus code...
+(
+source %{_builddir}%{venv_dir}/bin/activate
+python setup.py build
+python setup.py install_lib
 
-%{_builddir}%{venv_dir}/bin/python setup.py build
-%{_builddir}%{venv_dir}/bin/python setup.py install_lib
-# And make the virtualenv relocatable.
+# Make the virtualenv relocatable.
 virtualenv --relocatable %{_builddir}%{venv_dir}
 echo "FIXING virtualenv PATHS"
 find -H %{_builddir}%{venv_dir}/bin -type f | while read filename;
@@ -89,11 +111,17 @@ do
         echo "FIXED ${filename}"
      fi
 done
+)
 
 %install
+source /opt/rh/python27/enable
 mkdir -p %{buildroot}%{venv_base_dir}
 cp -R %{_builddir}%{venv_dir} %{buildroot}%{venv_base_dir}
-%{buildroot}%{venv_dir}/bin/python setup.py install_data --root %{buildroot}
+
+(
+source %{_builddir}%{venv_dir}/bin/activate
+python setup.py install_data --root %{buildroot}
+)
 
 %if %{use_systemd}
 %{__mkdir} -p %{buildroot}%{_unitdir}
@@ -108,9 +136,6 @@ mkdir -p %{buildroot}%{_localstatedir}/run/%{name}
 rm %{buildroot}%{venv_dir}/lib64
 ln -s %{venv_dir}/lib %{buildroot}%{venv_dir}/lib64
 
-# This avoids prelink & RPM helpfully breaking the package signatures:
-/usr/sbin/prelink -u %{buildroot}%{venv_dir}/bin/python
-
 %clean
 rm -rf %{buildroot}
 
@@ -123,8 +148,23 @@ rm -rf %{buildroot}
 %config(noreplace) %{_sysconfdir}/%{name}/log.conf
 %config(noreplace) %{_sysconfdir}/%{name}/supervisord.conf
 %{venv_dir}
-%exclude %{venv_dir}/lib/python2.6/*.pyc
-%verify(not md5 size mtime) %{venv_dir}/lib/python2.6/*.pyc
+# *Ugh*. Something about the virtualenv causes these to get modified after the fact...
+%exclude %{venv_dir}/lib/python2.7/site-packages/supervisor/*.pyc
+%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/supervisor/*.pyc
+%exclude %{venv_dir}/lib/python2.7/site-packages/supervisor/medusa/*.pyc
+%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/supervisor/medusa/*.pyc
+%exclude %{venv_dir}/lib/python2.7/site-packages/supervisor/scripts/*.pyc
+%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/supervisor/scripts/*.pyc
+%exclude %{venv_dir}/lib/python2.7/site-packages/supervisor/tests/*.pyc
+%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/supervisor/tests/*.pyc
+%exclude %{venv_dir}/lib/python2.7/site-packages/pkg_resources/*.pyc
+%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/pkg_resources/*.pyc
+%exclude %{venv_dir}/lib/python2.7/site-packages/pkg_resources/extern/*.pyc
+%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/pkg_resources/extern/*.pyc
+%exclude %{venv_dir}/lib/python2.7/site-packages/pkg_resources/_vendor/*.pyc
+%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/pkg_resources/_vendor/*.pyc
+%exclude %{venv_dir}/lib/python2.7/site-packages/pkg_resources/_vendor/packaging/*.pyc
+%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/pkg_resources/_vendor/packaging/*.pyc
 %if %{use_systemd}
 %{_unitdir}/plexus.service
 %else
