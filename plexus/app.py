@@ -172,7 +172,7 @@ class PlexusController(ControllerBase):
             payload = {'rest_caller_id': CONF.switchboard.username, 'rest_caller_pw': CONF.switchboard.password}
             r = requests.get(CONF.switchboard.state_url, params=payload, timeout=SWITCHBOARD_REPLY_TIMEOUT)
         except:
-            logger.error('Error in retrieving Switchboard configuration!')
+            logger.exception('Error in retrieving Switchboard configuration!')
             return
 
     @classmethod
