@@ -138,6 +138,7 @@ REST_GATEWAY = 'gateway'
 REST_GATEWAY_MAC = 'gateway_mac'
 REST_SOURCE = 'source'
 REST_BARE = 'bare'
+REST_WIPE = 'wipe'
 REST_DHCP = 'dhcp_servers'
 
 PRIORITY_VLAN_SHIFT = 1000

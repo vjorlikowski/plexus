@@ -12,6 +12,7 @@
 # Author: Victor J. Orlikowski <vjo@duke.edu>
 
 import warnings
+from distutils.util import strtobool
 
 from plexus import *
 from plexus.ofctl import *
@@ -80,13 +81,14 @@ class Router(dict):
         return self[vlan_id]
 
     def _del_vlan_router(self, vlan_id, waiters):
-        # Remove unnecessary VlanRouter.
+        # GC empty subnet routing tables before attempting any deletions.
+        vlan_router = self[vlan_id]
+        vlan_router.policy_routing_tbl.gc_subnet_tables()
+
+        # We never delete the default VLAN.
+        # FIXME: How can the default VLAN be converted to "bare," if so desired?
         if vlan_id == VLANID_NONE:
             return
-
-        vlan_router = self[vlan_id]
-        # GC empty subnet routing tables before attempting the delete.
-        vlan_router.policy_routing_tbl.gc_subnet_tables()
 
         if (len(vlan_router.address_data) == 0
                 and len(vlan_router.policy_routing_tbl) == 1
@@ -111,7 +113,7 @@ class Router(dict):
             if REST_BARE in param:
                 bare = param[REST_BARE]
                 try:
-                    bare = bool(bare)
+                    bare = bool(strtobool(bare))
                 except ValueError as e:
                     err_msg = 'Invalid [%s] value. %s'
                     raise ValueError(err_msg % (REST_BARE, e.message))
@@ -119,7 +121,7 @@ class Router(dict):
 
         msgs = []
         for vlan_router in vlan_routers:
-            # FIXME: Put an error in here, if someone tried to make a non-bare router bare!
+            # FIXME: Decide the semantics of making a router bare or not, dynamically.
             if not vlan_router.bare:
                 try:
                     msg = vlan_router.set_data(param)
@@ -131,6 +133,8 @@ class Router(dict):
                     # Data setting is failure.
                     self._del_vlan_router(vlan_router.vlan_id, waiters)
                     raise err_msg
+            else:
+                msgs.append({REST_RESULT: REST_OK, REST_VLANID: vlan_id})
 
         return {REST_SWITCHID: self.dpid_str,
                 REST_COMMAND_RESULT: msgs}
@@ -542,6 +546,17 @@ class VlanRouter(object):
         elif REST_ADDRESSID in data:
             address_id = data[REST_ADDRESSID]
             msg = self._delete_address_data(address_id, waiters)
+        elif REST_WIPE in data:
+            wipe = data[REST_WIPE]
+            try:
+                wipe = bool(strtobool(wipe))
+            except ValueError as e:
+                err_msg = 'Invalid [%s] value. %s'
+                raise ValueError(err_msg % (REST_WIPE, e.message))
+            if wipe:
+                msg = self._wipe_all_data(waiters)
+            else:
+                msg = {REST_RESULT: REST_OK}
         else:
             raise ValueError('Invalid parameter.')
 
@@ -659,6 +674,12 @@ class VlanRouter(object):
             msg = {REST_RESULT: REST_OK, REST_DETAILS: details}
 
         return msg
+
+    def _wipe_all_data(self, waiters):
+        self._delete_routing_data(REST_ALL, waiters)
+        self._delete_address_data(REST_ALL, waiters)
+
+        return {REST_RESULT: REST_OK}
 
     def _chk_addr_relation_route(self, address_id):
         # Check exist of related routing data.
