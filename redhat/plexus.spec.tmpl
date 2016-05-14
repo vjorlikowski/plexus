@@ -38,8 +38,6 @@ Requires(preun):    chkconfig
 
 # Disable debuginfo packaging...
 %global debug_package %{nil}
-# And disable re-compilation of python bytecode.
-%global __os_install_post %(echo '%{__os_install_post}' | sed -e 's!/usr/lib[^[:space:]]*/brp-python-bytecompile[[:space:]].*$!!g')
 
 %description
 Plexus is a Ryu OpenFlow controller application.
@@ -121,7 +119,6 @@ cp -R %{_builddir}%{venv_dir} %{buildroot}%{venv_base_dir}
 (
 source %{_builddir}%{venv_dir}/bin/activate
 python setup.py install_data --root %{buildroot}
-)
 
 %if %{use_systemd}
 %{__mkdir} -p %{buildroot}%{_unitdir}
@@ -136,6 +133,17 @@ mkdir -p %{buildroot}%{_localstatedir}/run/%{name}
 rm %{buildroot}%{venv_dir}/lib64
 ln -s %{venv_dir}/lib %{buildroot}%{venv_dir}/lib64
 
+# Wipe out all pyc files, so that they can be re-generated ...
+find %{buildroot}%{venv_dir}/lib -type f -name "*.pyc" -delete
+# ... and re-generate them.
+depth=`(find "$RPM_BUILD_ROOT" -type f -name "*.py" -print0 ; echo /) | \
+       xargs -0 -n 1 dirname | sed 's,[^/],,g' | sort -u | tail -n 1 | wc -c`
+python -c 'import compileall, re, sys; sys.exit (not compileall.compile_dir("'"$RPM_BUILD_ROOT"'", '"$depth"', "/", 1, re.compile(r"'"/bin/|/sbin/|/usr/lib(64)?/python[0-9]\.[0-9]"'"), quiet=1))' || true
+python -O -c 'import compileall, re, sys; sys.exit(not compileall.compile_dir("'"$RPM_BUILD_ROOT"'", '"$depth"', "/", 1, re.compile(r"'"/bin/|/sbin/|/usr/lib(64)?/python[0-9]\.[0-9]"'"), quiet=1))' > /dev/null || true
+)
+# Finally, prevent the post install scripts from running.
+exit 0
+
 %clean
 rm -rf %{buildroot}
 
@@ -148,23 +156,6 @@ rm -rf %{buildroot}
 %config(noreplace) %{_sysconfdir}/%{name}/log.conf
 %config(noreplace) %{_sysconfdir}/%{name}/supervisord.conf
 %{venv_dir}
-# *Ugh*. Something about the virtualenv causes these to get modified after the fact...
-%exclude %{venv_dir}/lib/python2.7/site-packages/supervisor/*.pyc
-%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/supervisor/*.pyc
-%exclude %{venv_dir}/lib/python2.7/site-packages/supervisor/medusa/*.pyc
-%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/supervisor/medusa/*.pyc
-%exclude %{venv_dir}/lib/python2.7/site-packages/supervisor/scripts/*.pyc
-%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/supervisor/scripts/*.pyc
-%exclude %{venv_dir}/lib/python2.7/site-packages/supervisor/tests/*.pyc
-%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/supervisor/tests/*.pyc
-%exclude %{venv_dir}/lib/python2.7/site-packages/pkg_resources/*.pyc
-%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/pkg_resources/*.pyc
-%exclude %{venv_dir}/lib/python2.7/site-packages/pkg_resources/extern/*.pyc
-%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/pkg_resources/extern/*.pyc
-%exclude %{venv_dir}/lib/python2.7/site-packages/pkg_resources/_vendor/*.pyc
-%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/pkg_resources/_vendor/*.pyc
-%exclude %{venv_dir}/lib/python2.7/site-packages/pkg_resources/_vendor/packaging/*.pyc
-%verify(not md5 size mtime) %{venv_dir}/lib/python2.7/site-packages/pkg_resources/_vendor/packaging/*.pyc
 %if %{use_systemd}
 %{_unitdir}/plexus.service
 %else
