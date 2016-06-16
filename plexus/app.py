@@ -111,6 +111,18 @@ class Plexus(app_manager.RyuApp):
     def packet_in_handler(self, ev):
         PlexusController.packet_in_handler(ev.msg)
 
+    @set_ev_cls(dpset.EventPortAdd, dpset.DPSET_EV_DISPATCHER)
+    def datapath_port_add_handler(self, ev):
+        PlexusController.router_datapath_port_update_handler(ev.dp, ev.port)
+
+    @set_ev_cls(dpset.EventPortModify, dpset.DPSET_EV_DISPATCHER)
+    def datapath_port_modify_handler(self, ev):
+        PlexusController.router_datapath_port_update_handler(ev.dp, ev.port)
+
+    @set_ev_cls(dpset.EventPortDelete, dpset.DPSET_EV_DISPATCHER)
+    def datapath_port_delete_handler(self, ev):
+        PlexusController.router_datapath_port_delete_handler(ev.dp, ev.port)
+
     def _stats_reply_handler(self, ev):
         msg = ev.msg
         dp = msg.datapath
@@ -192,6 +204,20 @@ class PlexusController(ControllerBase):
             # Force re-creation of router object.
             cls.unregister_router(dp)
             cls.register_router(dp, ports, waiters)
+
+    @classmethod
+    def router_datapath_port_update_handler(cls, dp, port):
+        assert dp is not None
+        if dp.id in cls._ROUTER_LIST:
+            router = cls._ROUTER_LIST[dp.id]
+            router.port_update_handler(port)
+
+    @classmethod
+    def router_datapath_port_delete_handler(cls, dp, port):
+        assert dp is not None
+        if dp.id in cls._ROUTER_LIST:
+            router = cls._ROUTER_LIST[dp.id]
+            router.port_delete_handler(port)
 
     @classmethod
     def packet_in_handler(cls, msg):

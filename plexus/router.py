@@ -156,6 +156,14 @@ class Router(dict):
         return {REST_SWITCHID: self.dpid_str,
                 REST_COMMAND_RESULT: msgs}
 
+    def port_update_handler(self, port):
+        self.logger.info('Updating port data for port [%s].', port.port_no)
+        self.port_data.update(port)
+
+    def port_delete_handler(self, port):
+        self.logger.info('Deleting port data for port [%s].', port.port_no)
+        self.port_data.delete(port)
+
     def packet_in_handler(self, msg):
         pkt = None
         try:
@@ -497,7 +505,7 @@ class VlanRouter(object):
             if gateway_mac is not None and address is not None:
                 src_ip = address.default_gw
                 for send_port in self.port_data.values():
-                    src_mac = send_port.mac
+                    src_mac = send_port.hw_addr
                     out_port = send_port.port_no
                     header_list = dict()
                     header_list[ETHERNET] = ethernet.ethernet(src_mac, gateway_mac, ether.ETH_TYPE_IP)
@@ -898,8 +906,12 @@ class VlanRouter(object):
             if header_list[ARP].opcode == arp.ARP_REQUEST:
                 # ARP request to router port -> send ARP reply
                 src_mac = header_list[ARP].src_mac
-                dst_mac = self.port_data[in_port].mac
-                arp_target_mac = dst_mac
+
+                dst_port = self.port_data.get(in_port)
+                if not dst_port:
+                    return
+                dst_mac = dst_port.hw_addr
+
                 output = in_port
                 in_port = self.dp.ofproto.OFPP_CONTROLLER
 
@@ -907,7 +919,7 @@ class VlanRouter(object):
 
                 self.ofctl.send_arp(arp.ARP_REPLY, self.vlan_id,
                                     dst_mac, src_mac, dst_ip, src_ip,
-                                    arp_target_mac, in_port, output)
+                                    dst_mac, in_port, output)
 
                 self.logger.info(('Received ARP request from [%s] ' +
                                  'to router at [%s].'),
@@ -1094,9 +1106,10 @@ class VlanRouter(object):
 
     def send_arp_request(self, src_ip, dst_ip, in_port=None):
         # Send ARP request from all ports.
+        self.logger.info('Sending ARP request from [%s] asking who-has [%s].', src_ip, dst_ip)
         for send_port in self.port_data.values():
             if in_port is None or in_port != send_port.port_no:
-                src_mac = send_port.mac
+                src_mac = send_port.hw_addr
                 dst_mac = mac_lib.BROADCAST_STR
                 arp_target_mac = mac_lib.DONTCARE_STR
                 inport = self.dp.ofproto.OFPP_CONTROLLER
@@ -1131,10 +1144,10 @@ class VlanRouter(object):
         src_mac = header_list[ARP].src_mac
         src_ip = header_list[ARP].src_ip
 
-        dst_port_data = self.port_data.get(out_port)
-        if not dst_port_data:
+        dst_port = self.port_data.get(out_port)
+        if not dst_port:
             return
-        dst_mac = dst_port_data.mac
+        dst_mac = dst_port.hw_addr
 
         default_route = self.policy_routing_tbl.get_data(dst_ip=INADDR_ANY_BASE, src_ip=src_ip)
         gateway_flg = False
@@ -1182,10 +1195,10 @@ class VlanRouter(object):
         src_ip = header_list[ARP].src_ip
         src_ip_str = ip_addr_ntoa(src_ip)
 
-        dst_port_data = self.port_data.get(out_port)
-        if not dst_port_data:
+        dst_port = self.port_data.get(out_port)
+        if not dst_port:
             return
-        dst_mac = dst_port_data.mac
+        dst_mac = dst_port.hw_addr
 
         address = self.address_data.get_data(ip=src_ip)
         if address is not None:
