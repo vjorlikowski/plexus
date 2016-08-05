@@ -152,7 +152,7 @@ class Plexus(app_manager.RyuApp):
     def stats_reply_handler_v1_2(self, ev):
         self._stats_reply_handler(ev)
 
-    #TODO: Update routing table when port status is changed.
+    #TODO: Update routing table when port status is changed, or ports are added/removed.
 
 
 class PlexusController(ControllerBase):

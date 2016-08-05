@@ -157,6 +157,7 @@ class Router(dict):
                 REST_COMMAND_RESULT: msgs}
 
     def port_update_handler(self, port):
+        # FIXME: Need to update more than just port data; might need to update routing tables.
         self.logger.info('Updating port data for port [%s].', port.port_no)
         self.port_data.update(port)
 

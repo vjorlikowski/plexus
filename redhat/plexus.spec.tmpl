@@ -15,7 +15,7 @@ Summary:   plexus is a Ryu controller application, providing a wide variety of s
 
 Group:     Applications/System
 License:   MIT
-URL:       https://gitlab.oit.duke.edu/vjo/plexus
+URL:       https://github.com/vjorlikowski/plexus
 Source:    %{name}-%{commit}.tgz
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
 
@@ -79,6 +79,7 @@ pip install pyOpenSSL==16.0.0
 pip install urllib3==1.15.1
 pip install ndg-httpsclient==0.4.0
 pip install paramiko==2.0.0
+pip install certifi
 pip install requests==2.10.0
 pip install lxml==3.6.0
 pip install supervisor==3.2.3 --pre
@@ -89,7 +90,7 @@ pip install oslo.config==3.4.0
 # Install Ryu.
 (
 source %{_builddir}%{venv_dir}/bin/activate
-pip install ryu==4.2
+pip install ryu==4.5
 )
 
 # And now for the plexus code...
@@ -97,18 +98,6 @@ pip install ryu==4.2
 source %{_builddir}%{venv_dir}/bin/activate
 python setup.py build
 python setup.py install_lib
-
-# Make the virtualenv relocatable.
-virtualenv --relocatable %{_builddir}%{venv_dir}
-echo "FIXING virtualenv PATHS"
-find -H %{_builddir}%{venv_dir}/bin -type f | while read filename;
-do
-     perl -p -i.bak -e "s|%{_builddir}||g" ${filename}
-     if [ -f ${filename}.bak ]; then
-        rm -f ${filename}.bak
-        echo "FIXED ${filename}"
-     fi
-done
 )
 
 %install
@@ -119,6 +108,7 @@ cp -R %{_builddir}%{venv_dir} %{buildroot}%{venv_base_dir}
 (
 source %{_builddir}%{venv_dir}/bin/activate
 python setup.py install_data --root %{buildroot}
+)
 
 %if %{use_systemd}
 %{__mkdir} -p %{buildroot}%{_unitdir}
@@ -129,6 +119,19 @@ mkdir -p %{buildroot}%{_localstatedir}/run/%{name}
 %{__install} -m 755 redhat/plexus.init %{buildroot}%{_initrddir}/plexus
 %endif
 
+(
+source %{_builddir}%{venv_dir}/bin/activate
+# Make the virtualenv relocatable.
+virtualenv --relocatable %{buildroot}%{venv_dir}
+echo "FIXING virtualenv PATHS"
+find -H %{buildroot}%{venv_dir}/bin -type f | while read filename;
+do
+     perl -p -i.bak -e "s|%{_builddir}||g" ${filename}
+     if [ -f ${filename}.bak ]; then
+        rm -f ${filename}.bak
+        echo "FIXED ${filename}"
+     fi
+done
 # Correct the virtualenv lib64 symlink to what it will point to on a real install:
 rm %{buildroot}%{venv_dir}/lib64
 ln -s %{venv_dir}/lib %{buildroot}%{venv_dir}/lib64
