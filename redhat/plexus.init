@@ -26,7 +26,7 @@ LOCKFILE=/var/lock/subsys/${NAME}
 source /opt/rh/python27/enable
 
 start() {
-    echo -n $"Starting $NAME: "
+    echo -n $"Starting ${NAME}: "
     (${BASEDIR}/supervisord -c ${CONFDIR}/supervisord.conf 2>/dev/null) && success || failure
     RETVAL=$?
     echo
@@ -34,7 +34,7 @@ start() {
 }
 
 stop() {
-    echo -n $"Stopping plexus: "
+    echo -n $"Stopping ${NAME}: "
     (${BASEDIR}/supervisorctl -c ${CONFDIR}/supervisord.conf shutdown >/dev/null) && success || failure
     RETVAL=$?
     echo
@@ -42,7 +42,7 @@ stop() {
 }
 
 restart() {
-    echo -n $"Restarting plexus: "
+    echo -n $"Restarting ${NAME}: "
     (${BASEDIR}/supervisorctl -c ${CONFDIR}/supervisord.conf reload >/dev/null) && success || failure
     RETVAL=$?
     echo
