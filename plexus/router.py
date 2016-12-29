@@ -853,12 +853,13 @@ class VlanRouter(object):
         src_ip_str = ip_addr_ntoa(src_ip)
         dst_ip_str = ip_addr_ntoa(dst_ip)
         src_addr = self.address_data.get_data(ip=src_ip)
+
         self.logger.info('Handling incoming ARP: [%s]->[%s] on VLAN [%d]',
                          src_ip_str, dst_ip_str, self.vlan_id)
         if (src_addr is None) and (not self.bare):
             self.logger.info('No gateway defined for subnet containing [%s]; '
                              'not handling ARP.',
-                             header_list[ARP].src_ip)
+                             src_ip)
             return
 
         # Housekeeping tasks, associated with seeing an ARP.
@@ -906,20 +907,20 @@ class VlanRouter(object):
         else:
             if header_list[ARP].opcode == arp.ARP_REQUEST:
                 # ARP request to router port -> send ARP reply
-                src_mac = header_list[ARP].src_mac
+                dst_mac = header_list[ARP].src_mac
 
-                dst_port = self.port_data.get(in_port)
-                if not dst_port:
+                src_port = self.port_data.get(in_port)
+                if not src_port:
+                    # FIXME: Log something here, if we got an ARP
+                    # on a port we don't know about?
                     return
-                dst_mac = dst_port.hw_addr
+                src_mac = src_port.hw_addr
 
                 output = in_port
                 in_port = self.dp.ofproto.OFPP_CONTROLLER
 
-                dst_vlan = self.vlan_id
-
                 self.ofctl.send_arp(arp.ARP_REPLY, self.vlan_id,
-                                    dst_mac, src_mac, dst_ip, src_ip,
+                                    src_mac, dst_mac, dst_ip, src_ip,
                                     dst_mac, in_port, output)
 
                 self.logger.info(('Received ARP request from [%s] ' +
