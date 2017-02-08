@@ -903,11 +903,12 @@ class VlanRouter(object):
                     self.logger.info('Sent ARP to learned port [%s] for MAC [%s]',
                                      output, packet_dst_mac)
                 else:
-                    self.logger.info('Sending ARP (flood)')
+                    self.logger.info('Flooding ARP: [%s]->[%s]', src_ip_str, dst_ip_str)
         else:
             if header_list[ARP].opcode == arp.ARP_REQUEST:
                 # ARP request to router port -> send ARP reply
                 dst_mac = header_list[ARP].src_mac
+                arp_target_mac = dst_mac
 
                 src_port = self.port_data.get(in_port)
                 if not src_port:
@@ -921,7 +922,7 @@ class VlanRouter(object):
 
                 self.ofctl.send_arp(arp.ARP_REPLY, self.vlan_id,
                                     src_mac, dst_mac, dst_ip, src_ip,
-                                    dst_mac, in_port, output)
+                                    arp_target_mac, in_port, output)
 
                 self.logger.info(('Received ARP request from [%s] ' +
                                  'to router at [%s].'),
@@ -1079,8 +1080,8 @@ class VlanRouter(object):
             if arp_src_ip is not None:
                 self.packet_buffer.add(in_port, header_list, msg.data)
                 self.send_arp_request(arp_src_ip, dst_ip, in_port=in_port)
-                self.logger.info('Send ARP request (flood) on behalf of [%s] asking who-has [%s]',
-                                 src_ip_str, dst_ip_str)
+                self.logger.info('Flooding ARP request on behalf of [%s]: [%s] asking who-has [%s]',
+                                 src_ip_str, arp_src_ip, dst_ip_str)
             else:
                 self.logger.info('Could not find a viable path to destination [%s] for source [%s]',
                                  dst_ip_str, src_ip_str)
@@ -1122,7 +1123,7 @@ class VlanRouter(object):
 
     def send_icmp_unreach_error(self, packet_buffer):
         # Send ICMP host unreach error.
-        self.logger.info('ARP reply wait timer was timed out.')
+        self.logger.info('ARP reply wait timer timed out.')
 
         src_ip = self._get_send_port_ip(packet_buffer.header_list)
         if src_ip is not None:
