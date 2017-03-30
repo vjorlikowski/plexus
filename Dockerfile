@@ -1,32 +1,43 @@
 #
-# Switchboard Controller Dockerfile
+# Plexus SDN Controller Dockerfile
 #
 
 # Pull base image.
-FROM dockerfile/python
+FROM python:2
 
-# Install dependencies and application support.
-RUN pip install cffi==1.2.1
-RUN pip install pyOpenSSL==0.15.1
-RUN pip install paramiko==1.15.2
-RUN pip install urllib3==1.11
-RUN pip install requests==2.7.0
-RUN pip install ndg-httpsclient==0.4.0
-RUN pip install lxml==3.4.4
-RUN pip install supervisor==3.1.3 --pre
+# Grab latest version of plexus, unpack it, install dependencies, and install it.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python-pip \
+      wget \
+      unzip && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    wget -O /opt/plexus.zip "https://github.com/vjorlikowski/plexus/archive/master.zip" --no-check-certificate && \
+    unzip -q /opt/plexus.zip -d /opt && \
+    mv /opt/plexus-master /opt/plexus && \
+    rm /opt/plexus.zip && \
+    cd /opt/plexus && \
+    pip install -r pip-requires && \
+    python ./setup.py install
 
-# Sigh.
-# More dependencies, but these are badly specified and we have to work around conflicts.
-RUN pip install pbr==1.6.0
-RUN pip install oslo.config==2.3.0
-RUN pip install pbr==0.10.8
+# Make the run directory
+RUN mkdir -p /var/lib/plexus && \
+    mkdir -p /var/run/plexus
 
-# Finally, install Ryu...
-RUN pip install ryu==3.25
+# Add the plexus user and group
+RUN useradd -ms /sbin/nologin plexus
 
-# FIXME: Do controller installation here - probably a wget/untar/setup.py
+RUN chown -R plexus:plexus /var/lib/plexus && \
+    chown -R plexus:plexus /var/run/plexus && \
+    chown -R plexus:plexus /var/log/plexus
+
+# FIXME: need to make sure executable is in path, to avoid this hackery.
+RUN sed -i -e 's%/opt/plexus%/usr/local%g' /etc/plexus/supervisord.conf
+
+# FIXME: supervisord needs to run in the foreground.
+RUN sed -i -e 's%nodaemon=false%nodaemon=true%g' /etc/plexus/supervisord.conf
 
 # Define ports
 EXPOSE 6633 8080
-# FIXME: Ensure we have the right executable here.
-CMD ["/usr/bin/supervisord"]
+ENTRYPOINT /usr/local/bin/supervisord -c /etc/plexus/supervisord.conf
