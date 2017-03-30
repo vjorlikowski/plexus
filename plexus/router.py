@@ -29,6 +29,10 @@ class Router(dict):
         self.sw_id = {'sw_id': self.dpid_str}
 
         self.port_data = PortData(ports)
+        self.logger.info('Known ports at switch connect time:')
+        for port in self.port_data.keys():
+            self.logger.info('\t%s', port)
+        self.logger.info('Done listing known ports.')
 
         ofctl = OfCtl.factory(dp, logger)
         cookie = COOKIE_DEFAULT_ID
@@ -187,6 +191,7 @@ class Router(dict):
                     self[vlan_id].packet_in_handler(msg, header_list)
                     # FIXME: Deal with updating any routing rules that route to this vlan_id from other routers here.
                 else:
+                    # FIXME: Have a penalty box rule here, per-VLAN, that inserts a block rule for any VLAN that attempts DoS
                     self.logger.debug('Drop unknown vlan packet. [vlan_id=%d]', vlan_id)
             else:
                 self.logger.debug('Unable to parse payload packet headers; dropping packet-in.')
@@ -1041,14 +1046,19 @@ class VlanRouter(object):
             dst_mac = header_list[ETHERNET].dst
             out_port = self.dp.ofproto.OFPP_ALL
 
+            self.logger.info('TCP/UDP on bare VLAN; attempting to discover how to forward: ' +
+                             '[%s]->[%s]', src_mac, dst_mac)
+
             mac_entry = self.mac_table.get(dst_mac)
             if mac_entry:
+                self.logger.info('Found egress port for: [%s]', dst_mac)
                 out_port = mac_entry.port
 
             if (out_port != self.dp.ofproto.OFPP_ALL):
                 actions = [self.dp.ofproto_parser.OFPActionOutput(out_port)]
                 cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
                 priority = self._get_priority(PRIORITY_IMPLICIT_ROUTING)
+                self.logger.info('Setting IP flow rule for [%s]->[%s]', src_mac, dst_mac)
                 self.ofctl.set_flow(cookie, priority,
                                     in_port=in_port,
                                     dl_type=ether.ETH_TYPE_IP,
