@@ -21,23 +21,15 @@ RUN apt-get update && \
     pip install -r pip-requires && \
     python ./setup.py install
 
-# Make the run directory
-RUN mkdir -p /var/lib/plexus && \
-    mkdir -p /var/run/plexus
-
 # Add the plexus user and group
 RUN useradd -ms /sbin/nologin plexus
 
-RUN chown -R plexus:plexus /var/lib/plexus && \
-    chown -R plexus:plexus /var/run/plexus && \
-    chown -R plexus:plexus /var/log/plexus
-
-# FIXME: need to make sure executable is in path, to avoid this hackery.
-RUN sed -i -e 's%/opt/plexus%/usr/local%g' /etc/plexus/supervisord.conf
-
-# FIXME: supervisord needs to run in the foreground.
-RUN sed -i -e 's%nodaemon=false%nodaemon=true%g' /etc/plexus/supervisord.conf
+# Change ownership of the log directory
+RUN chown -R plexus:plexus /var/log/plexus
 
 # Define ports
 EXPOSE 6633 8080
-ENTRYPOINT /usr/local/bin/supervisord -c /etc/plexus/supervisord.conf
+
+# Change user, and run.
+USER plexus
+ENTRYPOINT /usr/local/bin/ryu run --config-file /etc/plexus/ryu.conf
