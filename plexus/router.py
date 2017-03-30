@@ -29,6 +29,10 @@ class Router(dict):
         self.sw_id = {'sw_id': self.dpid_str}
 
         self.port_data = PortData(ports)
+        self.logger.info('Known ports at switch connect time:')
+        for port in self.port_data.keys():
+            self.logger.info('\t%s', port)
+        self.logger.info('Done listing known ports.')
 
         ofctl = OfCtl.factory(dp, logger)
         cookie = COOKIE_DEFAULT_ID
@@ -187,6 +191,7 @@ class Router(dict):
                     self[vlan_id].packet_in_handler(msg, header_list)
                     # FIXME: Deal with updating any routing rules that route to this vlan_id from other routers here.
                 else:
+                    # FIXME: Have a penalty box rule here, per-VLAN, that inserts a block rule for any VLAN that attempts DoS
                     self.logger.debug('Drop unknown vlan packet. [vlan_id=%d]', vlan_id)
             else:
                 self.logger.debug('Unable to parse payload packet headers; dropping packet-in.')
@@ -853,12 +858,13 @@ class VlanRouter(object):
         src_ip_str = ip_addr_ntoa(src_ip)
         dst_ip_str = ip_addr_ntoa(dst_ip)
         src_addr = self.address_data.get_data(ip=src_ip)
+
         self.logger.info('Handling incoming ARP: [%s]->[%s] on VLAN [%d]',
                          src_ip_str, dst_ip_str, self.vlan_id)
         if (src_addr is None) and (not self.bare):
             self.logger.info('No gateway defined for subnet containing [%s]; '
                              'not handling ARP.',
-                             header_list[ARP].src_ip)
+                             src_ip)
             return
 
         # Housekeeping tasks, associated with seeing an ARP.
@@ -902,25 +908,26 @@ class VlanRouter(object):
                     self.logger.info('Sent ARP to learned port [%s] for MAC [%s]',
                                      output, packet_dst_mac)
                 else:
-                    self.logger.info('Sending ARP (flood)')
+                    self.logger.info('Flooding ARP: [%s]->[%s]', src_ip_str, dst_ip_str)
         else:
             if header_list[ARP].opcode == arp.ARP_REQUEST:
                 # ARP request to router port -> send ARP reply
-                src_mac = header_list[ARP].src_mac
+                dst_mac = header_list[ARP].src_mac
+                arp_target_mac = dst_mac
 
-                dst_port = self.port_data.get(in_port)
-                if not dst_port:
+                src_port = self.port_data.get(in_port)
+                if not src_port:
+                    # FIXME: Log something here, if we got an ARP
+                    # on a port we don't know about?
                     return
-                dst_mac = dst_port.hw_addr
+                src_mac = src_port.hw_addr
 
                 output = in_port
                 in_port = self.dp.ofproto.OFPP_CONTROLLER
 
-                dst_vlan = self.vlan_id
-
                 self.ofctl.send_arp(arp.ARP_REPLY, self.vlan_id,
-                                    dst_mac, src_mac, dst_ip, src_ip,
-                                    dst_mac, in_port, output)
+                                    src_mac, dst_mac, dst_ip, src_ip,
+                                    arp_target_mac, in_port, output)
 
                 self.logger.info(('Received ARP request from [%s] ' +
                                  'to router at [%s].'),
@@ -1039,14 +1046,19 @@ class VlanRouter(object):
             dst_mac = header_list[ETHERNET].dst
             out_port = self.dp.ofproto.OFPP_ALL
 
+            self.logger.info('TCP/UDP on bare VLAN; attempting to discover how to forward: ' +
+                             '[%s]->[%s]', src_mac, dst_mac)
+
             mac_entry = self.mac_table.get(dst_mac)
             if mac_entry:
+                self.logger.info('Found egress port for: [%s]', dst_mac)
                 out_port = mac_entry.port
 
             if (out_port != self.dp.ofproto.OFPP_ALL):
                 actions = [self.dp.ofproto_parser.OFPActionOutput(out_port)]
                 cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
                 priority = self._get_priority(PRIORITY_IMPLICIT_ROUTING)
+                self.logger.info('Setting IP flow rule for [%s]->[%s]', src_mac, dst_mac)
                 self.ofctl.set_flow(cookie, priority,
                                     in_port=in_port,
                                     dl_type=ether.ETH_TYPE_IP,
@@ -1078,8 +1090,8 @@ class VlanRouter(object):
             if arp_src_ip is not None:
                 self.packet_buffer.add(in_port, header_list, msg.data)
                 self.send_arp_request(arp_src_ip, dst_ip, in_port=in_port)
-                self.logger.info('Send ARP request (flood) on behalf of [%s] asking who-has [%s]',
-                                 src_ip_str, dst_ip_str)
+                self.logger.info('Flooding ARP request on behalf of [%s]: [%s] asking who-has [%s]',
+                                 src_ip_str, arp_src_ip, dst_ip_str)
             else:
                 self.logger.info('Could not find a viable path to destination [%s] for source [%s]',
                                  dst_ip_str, src_ip_str)
@@ -1121,7 +1133,7 @@ class VlanRouter(object):
 
     def send_icmp_unreach_error(self, packet_buffer):
         # Send ICMP host unreach error.
-        self.logger.info('ARP reply wait timer was timed out.')
+        self.logger.info('ARP reply wait timer timed out.')
 
         src_ip = self._get_send_port_ip(packet_buffer.header_list)
         if src_ip is not None:
