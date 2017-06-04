@@ -571,6 +571,17 @@ class VlanRouter(object):
                 msg = self._wipe_all_data(waiters)
             else:
                 msg = {REST_RESULT: REST_OK}
+        elif REST_DISCONNECT in data:
+            disconnect = data[REST_DISCONNECT]
+            try:
+                disconnect = bool(strtobool(disconnect))
+            except ValueError as e:
+                err_msg = 'Invalid [%s] value. %s'
+                raise ValueError(err_msg % (REST_DISCONNECT, e.message))
+            if disconnect:
+                self.logger.info('Disconnecting datapath at administrator request.')
+                self.dp.close()
+            msg = {REST_RESULT: REST_OK}
         else:
             raise ValueError('Invalid parameter.')
 
