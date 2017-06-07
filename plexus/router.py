@@ -60,6 +60,7 @@ class Router(dict):
         self.logger.info('Stopped cyclic routing table update.')
         for vlan_router in self.values():
             vlan_router.shutdown()
+            del self[vlan_router.vlan_id]
 
     def _get_vlan_router(self, vlan_id):
         vlan_routers = []
