@@ -52,12 +52,12 @@ class Router(dict):
 
         # Start cyclic routing table check.
         self.thread = hub.spawn(self._cyclic_update_routing_tbls)
-        self.logger.info('Start cyclic routing table update.')
+        self.logger.info('Started cyclic routing table update.')
 
     def delete(self):
         hub.kill(self.thread)
         self.thread.wait()
-        self.logger.info('Stop cyclic routing table update.')
+        self.logger.info('Stopped cyclic routing table update.')
         for vlan_router in self.values():
             vlan_router.shutdown()
 
@@ -131,10 +131,10 @@ class Router(dict):
                     msg = vlan_router.set_data(param)
                     msgs.append(msg)
                     if msg[REST_RESULT] == REST_NG:
-                        # Data setting is failure.
+                        # Setting data failed.
                         self._del_vlan_router(vlan_router.vlan_id, waiters)
                 except ValueError as err_msg:
-                    # Data setting is failure.
+                    # Setting data failed.
                     self._del_vlan_router(vlan_router.vlan_id, waiters)
                     raise err_msg
             else:
@@ -220,6 +220,7 @@ class VlanRouter(object):
         self.logger = parent_router.logger
         self.port_data = parent_router.port_data
         self.bare = bare
+        self.quiescing = False
 
         self.sw_id = {'sw_id': dpid_lib.dpid_to_str(self.dp.id)}
         self.address_data = AddressData()
@@ -237,20 +238,30 @@ class VlanRouter(object):
         else:
             self._set_defaultroute_drop()
 
+    # Call this method if the datapath may not still be connected.
+    # It will not attempt to delete flows from the datapath.
     def shutdown(self):
+        # First, mark that we're shutting down,
+        # so that no further packet processing occurs.
+        self.quiescing = True
+
+        self.packet_buffer.shutdown()
+        assert len(self.packet_buffer) == 0
+
         self.penalty_box.shutdown()
         self.mac_table.shutdown()
 
+    # Call this method only if the datapath *is* still connected.
+    # Otherwise, it may not make sense to try to delete flows.
     def delete(self, waiters):
-        # Delete flow.
+        self.shutdown()
+        # Delete all flows associated with this VLAN.
         msgs = self.ofctl.get_all_flow(waiters)
         for msg in msgs:
             for stats in msg.body:
                 vlan_id = VlanRouter._cookie_to_id(REST_VLANID, stats.cookie)
                 if vlan_id == self.vlan_id:
                     self.ofctl.delete_flow(stats)
-
-        assert len(self.packet_buffer) == 0
 
     @staticmethod
     def _cookie_to_id(id_type, cookie):
@@ -284,7 +295,14 @@ class VlanRouter(object):
         msg.setdefault(REST_VLANID, self.vlan_id)
         return msg
 
+    def _check_quiescing(self):
+        if self.quiescing:
+            msg = 'VlanRouter for VLAN %s shutting down.' % self.vlan_id
+            raise CommandFailure(msg=msg)
+
     def get_data(self):
+        self._check_quiescing()
+
         data = {}
 
         if self.bare:
@@ -326,6 +344,8 @@ class VlanRouter(object):
         return {REST_ROUTE: routing_data}
 
     def set_data(self, data):
+        self._check_quiescing()
+
         details = None
 
         try:
@@ -368,6 +388,8 @@ class VlanRouter(object):
             raise ValueError('Invalid parameter.')
 
     def _set_address_data(self, address):
+        self._check_quiescing()
+
         address = self.address_data.add(address)
 
         cookie = self._id_to_cookie(REST_ADDRESSID, address.address_id)
@@ -554,6 +576,8 @@ class VlanRouter(object):
         self.logger.info('Set %s (packet in) flow [cookie=0x%x]', log_msg, cookie)
 
     def delete_data(self, data, waiters):
+        self._check_quiescing()
+
         if REST_ROUTEID in data:
             route_id = data[REST_ROUTEID]
             msg = self._delete_routing_data(route_id, waiters)
@@ -824,6 +848,10 @@ class VlanRouter(object):
             self.mac_table[src_mac] = MACAddressEntry(in_port)
 
     def packet_in_handler(self, msg, header_list):
+        # Bail out, if we're shutting down.
+        if self.quiescing:
+            return
+
         # Check invalid TTL (for OpenFlow V1.2/1.3)
         ofproto = self.dp.ofproto
         if ofproto.OFP_VERSION == ofproto_v1_2.OFP_VERSION or \

@@ -283,6 +283,10 @@ class SuspendPacketList(list):
             self.timeout_function(suspend_pkt)
             self.delete(pkt=suspend_pkt)
 
+    def shutdown(self):
+        for pkt in self:
+            self.delete(pkt=pkt)
+
 
 class SuspendPacket(object):
     def __init__(self, in_port, header_list, data, timer):
