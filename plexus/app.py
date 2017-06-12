@@ -198,7 +198,10 @@ class PlexusController(ControllerBase):
 
     @classmethod
     def router_datapath_change_handler(cls, dp, ports, waiters):
-        assert dp is not None
+        if dp is None:
+            logger.error('Null datapath in change handler; aborting handler.')
+            return
+
         if dp.id in cls._ROUTER_LIST:
             # Datapath changed, but router is still present.
             # Force re-creation of router object.
@@ -207,14 +210,20 @@ class PlexusController(ControllerBase):
 
     @classmethod
     def router_datapath_port_update_handler(cls, dp, port):
-        assert dp is not None
+        if dp is None:
+            logger.error('Null datapath in port update handler; aborting handler.')
+            return
+
         if dp.id in cls._ROUTER_LIST:
             router = cls._ROUTER_LIST[dp.id]
             router.port_update_handler(port)
 
     @classmethod
     def router_datapath_port_delete_handler(cls, dp, port):
-        assert dp is not None
+        if dp is None:
+            logger.error('Null datapath in port delete handler; aborting handler.')
+            return
+
         if dp.id in cls._ROUTER_LIST:
             router = cls._ROUTER_LIST[dp.id]
             router.port_delete_handler(port)

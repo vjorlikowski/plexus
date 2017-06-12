@@ -26,8 +26,8 @@ def get_priority(priority_type, vid=0, route=None):
     log_msg = None
     priority = priority_type
 
-    if priority_type == PRIORITY_TYPE_ROUTE:
-        assert route is not None
+    if ((priority_type == PRIORITY_TYPE_ROUTE) and
+        (route is not None)):
         if route.dst_ip:
             if route.src_ip:
                 priority_type = PRIORITY_ADDRESSED_STATIC_ROUTING
@@ -108,18 +108,21 @@ def mask_ntob(mask, err_msg=None):
 def ipv4_apply_mask(address, prefix_len, err_msg=None):
     import itertools
 
-    assert isinstance(address, str)
+    if not isinstance(address, str):
+        raise ValueError('ipv4_apply_mask: address parameter was not a string.')
     address_int = ipv4_text_to_int(address)
     return ipv4_int_to_text(address_int & mask_ntob(prefix_len, err_msg))
 
 def ipv4_int_to_text(ip_int):
-    assert isinstance(ip_int, (int, long))
+    if not isinstance(ip_int, (int, long)):
+        raise ValueError('ipv4_int_to_text: ip_int parameter was not an int or long.')
     return addrconv.ipv4.bin_to_text(struct.pack('!I', ip_int))
 
 def ipv4_text_to_int(ip_text):
     if ip_text == 0:
         return ip_text
-    assert isinstance(ip_text, str)
+    if not isinstance(ip_text, str):
+        raise ValueError('ipv4_text_to_int: ip_text parameter was not a string.')
     return struct.unpack('!I', addrconv.ipv4.text_to_bin(ip_text))[0]
 
 def nw_addr_aton(nw_addr, err_msg=None):

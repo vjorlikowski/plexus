@@ -247,8 +247,6 @@ class VlanRouter(object):
         self.quiescing = True
 
         self.packet_buffer.shutdown()
-        assert len(self.packet_buffer) == 0
-
         self.penalty_box.shutdown()
         self.mac_table.shutdown()
 
@@ -270,9 +268,10 @@ class VlanRouter(object):
             rest_id = cookie >> COOKIE_SHIFT_VLANID
         elif id_type == REST_ADDRESSID:
             rest_id = cookie & UINT16_MAX
-        else:
-            assert id_type == REST_ROUTEID
+        elif id_type == REST_ROUTEID:
             rest_id = (cookie & UINT32_MAX) >> COOKIE_SHIFT_ROUTEID
+        else:
+            raise ValueError('Invalid id_type: %s' % id_type)
 
         return rest_id
 
@@ -283,9 +282,10 @@ class VlanRouter(object):
             cookie = rest_id << COOKIE_SHIFT_VLANID
         elif id_type == REST_ADDRESSID:
             cookie = vid + rest_id
-        else:
-            assert id_type == REST_ROUTEID
+        elif id_type == REST_ROUTEID:
             cookie = vid + (rest_id << COOKIE_SHIFT_ROUTEID)
+        else:
+            raise ValueError('Invalid id_type: %s' % id_type)
 
         return cookie
 

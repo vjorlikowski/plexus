@@ -71,14 +71,24 @@ class AddressData(dict):
         return [address.default_gw for address in self.values()]
 
     def get_data(self, addr_id=None, ip=None):
-        for address in self.values():
-            if addr_id is not None:
-                if addr_id == address.address_id:
+        if addr_id is not None:
+            def find_address(address):
+                return bool(addr_id == address.address_id)
+        elif ip is not None:
+            def find_address(address):
+                return bool(ipv4_apply_mask(ip, address.netmask) ==
+                            address.nw_addr)
+
+        try:
+            for address in self.values():
+                if find_address(address):
                     return address
-            else:
-                assert ip is not None
-                if ipv4_apply_mask(ip, address.netmask) == address.nw_addr:
-                    return address
+        except NameError:
+            # We only get here if find_address() was undefined.
+            # That only happens, if both addr_id and ip were None.
+            # In that case, bail out and return None.
+            pass
+
         return None
 
 
@@ -265,9 +275,10 @@ class SuspendPacketList(list):
     def delete(self, pkt=None, del_addr=None):
         if pkt is not None:
             del_list = [pkt]
-        else:
-            assert del_addr is not None
+        elif del_addr is not None:
             del_list = [pkt for pkt in self if pkt.dst_ip in del_addr]
+        else:
+            return
 
         for pkt in del_list:
             self.remove(pkt)
