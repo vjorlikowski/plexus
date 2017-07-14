@@ -62,7 +62,7 @@ class AddressData(dict):
         return address
 
     def delete(self, address_id):
-        for key, value in self.items():
+        for key, value in six.iteritems(self):
             if value.address_id == address_id:
                 del self[key]
                 return
@@ -144,7 +144,7 @@ class PolicyRoutingTable(dict):
         return self[key]
 
     def gc_subnet_tables(self):
-        for key, value in self.items():
+        for key, value in six.iteritems(self):
             if key != INADDR_ANY:
                 if (len(value) == 0):
                     del self[key]
@@ -209,7 +209,7 @@ class RoutingTable(dict):
         return routing_data
 
     def delete(self, route_id):
-        for key, value in self.items():
+        for key, value in six.iteritems(self):
             if value.route_id == route_id:
                 del self[key]
                 return
@@ -352,7 +352,7 @@ class MACAddressTable(dict):
     def _expire_loop(self):
         while True:
             current_time = time.time()
-            for mac, entry in self.items():
+            for mac, entry in six.iteritems(self):
                 if (entry.expire_time < current_time):
                     del self[mac]
                 hub.sleep(0)

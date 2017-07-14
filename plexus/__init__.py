@@ -13,6 +13,7 @@
 
 # Common imports
 import struct
+import six
 
 from ryu import cfg
 from ryu.lib import hub

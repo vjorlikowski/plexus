@@ -30,7 +30,7 @@ class Router(dict):
 
         self.port_data = PortData(ports)
         self.logger.info('Known ports at switch connect time:')
-        for port in self.port_data.keys():
+        for port in self.port_data:
             self.logger.info('\t%s', port)
         self.logger.info('Done listing known ports.')
 
@@ -332,7 +332,7 @@ class VlanRouter(object):
     def _get_routing_data(self):
         routing_data = []
         for table in self.policy_routing_tbl.values():
-            for dst, route in table.items():
+            for dst, route in six.iteritems(table):
                 gateway = ip_addr_ntoa(route.gateway_ip)
                 source_addr = ip_addr_ntoa(route.src_ip)
                 source = '%s/%d' % (source_addr, route.src_netmask)
@@ -1205,7 +1205,7 @@ class VlanRouter(object):
         default_route = self.policy_routing_tbl.get_data(dst_ip=INADDR_ANY_BASE, src_ip=src_ip)
         gateway_flg = False
         for table in self.policy_routing_tbl.values():
-            for key, value in table.items():
+            for key, value in six.iteritems(table):
                 if value.gateway_ip == src_ip:
                     gateway_flg = True
                     if value.gateway_mac == src_mac:
