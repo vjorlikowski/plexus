@@ -363,4 +363,8 @@ class MACAddressEntry(object):
     def __init__(self, port):
         super(MACAddressEntry, self).__init__()
         self.port = port
+        self.refresh()
+
+    def refresh(self):
         self.expire_time = (time.time() + MAC_ADDRESS_TTL)
+        

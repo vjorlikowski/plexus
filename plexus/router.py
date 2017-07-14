@@ -846,7 +846,11 @@ class VlanRouter(object):
             (src_mac != mac_lib.DONTCARE_STR) and
             (src_mac != mac_lib.MULTICAST) and
             (src_mac != mac_lib.UNICAST)):
-            self.mac_table[src_mac] = MACAddressEntry(in_port)
+            existing_mac_entry = self.mac_table.get(src_mac)
+            if existing_mac_entry:
+                existing_mac_entry.refresh()
+            else:
+                self.mac_table[src_mac] = MACAddressEntry(in_port)
 
     def packet_in_handler(self, msg, header_list):
         # Bail out, if we're shutting down.
@@ -1084,7 +1088,7 @@ class VlanRouter(object):
         if self.bare:
             src_mac = header_list[ETHERNET].src
             dst_mac = header_list[ETHERNET].dst
-            out_port = self.dp.ofproto.OFPP_ALL
+            out_port = None
 
             self.logger.info('TCP/UDP on bare VLAN; attempting to discover how to forward: ' +
                              '[%s]->[%s]', src_mac, dst_mac)
@@ -1093,8 +1097,12 @@ class VlanRouter(object):
             if mac_entry:
                 self.logger.info('Found egress port for: [%s]', dst_mac)
                 out_port = mac_entry.port
+            else:
+                self.logger.info('Egress port not found for: [%s]', dst_mac)
+                self.logger.info('Generating ARP to search for: [%s]', dst_mac)
+                self.send_arp_request(src_ip, dst_ip, in_port=in_port)
 
-            if (out_port != self.dp.ofproto.OFPP_ALL):
+            if out_port is not None:
                 actions = [self.dp.ofproto_parser.OFPActionOutput(out_port)]
                 cookie = self._id_to_cookie(REST_VLANID, self.vlan_id)
                 priority = self._get_priority(PRIORITY_IMPLICIT_ROUTING)
@@ -1107,7 +1115,9 @@ class VlanRouter(object):
                                     dl_vlan=self.vlan_id,
                                     idle_timeout=L2_IDLE_TIMEOUT,
                                     actions=actions)
-            self.ofctl.send_packet_out(in_port, out_port, msg.data)
+                self.ofctl.send_packet_out(in_port, out_port, msg.data)
+            else:
+                self.packet_buffer.add(in_port, header_list, msg.data)
         else:
             # Send ARP request to get node MAC address.
             arp_src_ip = None
