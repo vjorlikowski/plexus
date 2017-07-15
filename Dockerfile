@@ -3,12 +3,11 @@
 #
 
 # Pull base image.
-FROM python:2
+FROM pypy:2
 
 # Grab latest version of plexus, unpack it, install dependencies, and install it.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      python-pip \
       wget \
       unzip && \
     apt-get clean && \
@@ -19,7 +18,7 @@ RUN apt-get update && \
     rm /opt/plexus.zip && \
     cd /opt/plexus && \
     pip install -r pip-requires && \
-    python ./setup.py install
+    pypy ./setup.py install
 
 # Add the plexus user and group
 RUN useradd -ms /sbin/nologin plexus
@@ -32,4 +31,4 @@ EXPOSE 6633 8080
 
 # Change user, and run.
 USER plexus
-ENTRYPOINT /usr/local/bin/ryu run --config-file /etc/plexus/ryu.conf
+ENTRYPOINT pypy /usr/local/bin/ryu run --config-file /etc/plexus/ryu.conf
