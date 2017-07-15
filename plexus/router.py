@@ -58,7 +58,7 @@ class Router(dict):
         hub.kill(self.thread)
         self.thread.wait()
         self.logger.info('Stopped cyclic routing table update.')
-        for vlan_router in six.itervalues(self):
+        for vlan_router in self.values():
             vlan_router.shutdown()
             del self[vlan_router.vlan_id]
 

@@ -62,7 +62,7 @@ class AddressData(dict):
         return address
 
     def delete(self, address_id):
-        for key, value in six.iteritems(self):
+        for key, value in self.items():
             if value.address_id == address_id:
                 del self[key]
                 return
@@ -202,7 +202,7 @@ class RoutingTable(dict):
         return routing_data
 
     def delete(self, route_id):
-        for key, value in six.iteritems(self):
+        for key, value in self.items():
             if value.route_id == route_id:
                 del self[key]
                 return
@@ -317,6 +317,8 @@ class PenaltyBoxList(list):
                 entry.count -= PENALTY_BOX_DRAIN_AMOUNT
                 if (entry.count <= 0):
                     self.remove(entry)
+                    del entry
+                hub.sleep(0)
             hub.sleep(PENALTY_BOX_CHECK_INTERVAL)
 
 
@@ -343,9 +345,10 @@ class MACAddressTable(dict):
     def _expire_loop(self):
         while True:
             current_time = time.time()
-            for mac, entry in six.iteritems(self):
+            for mac, entry in self.items():
                 if (entry.expire_time < current_time):
                     del self[mac]
+                hub.sleep(0)
             hub.sleep(MAC_ADDRESS_GC_INTERVAL)
 
 
