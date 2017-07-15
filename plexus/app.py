@@ -275,7 +275,7 @@ class PlexusController(ControllerBase):
         rest_message = []
         routers = self._get_router(switch_id)
         param = eval(rest_param) if rest_param else {}
-        for router in routers.values():
+        for router in six.itervalues(routers):
             function = getattr(router, func)
             data = function(vlan_id, param, self.waiters)
             rest_message.append(data)

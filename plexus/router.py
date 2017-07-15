@@ -58,7 +58,7 @@ class Router(dict):
         hub.kill(self.thread)
         self.thread.wait()
         self.logger.info('Stopped cyclic routing table update.')
-        for vlan_router in self.values():
+        for vlan_router in six.itervalues(self):
             vlan_router.shutdown()
             del self[vlan_router.vlan_id]
 
@@ -103,30 +103,33 @@ class Router(dict):
 
     def get_data(self, vlan_id, dummy1, dummy2):
         vlan_routers = self._get_vlan_router(vlan_id)
-        if vlan_routers:
-            msgs = [vlan_router.get_data() for vlan_router in vlan_routers]
-        else:
+        msgs = [vlan_router.get_data() for vlan_router in vlan_routers]
+        if not msgs:
             msgs = [{REST_VLANID: vlan_id}]
 
         return {REST_SWITCHID: self.dpid_str,
                 REST_NW: msgs}
 
     def set_data(self, vlan_id, param, waiters):
-        vlan_routers = self._get_vlan_router(vlan_id)
-        if not vlan_routers:
-            bare = False
-            if REST_BARE in param:
-                bare = param[REST_BARE]
-                try:
-                    bare = bool(strtobool(bare))
-                except ValueError as e:
-                    err_msg = 'Invalid [%s] value. %s'
-                    raise ValueError(err_msg % (REST_BARE, e.message))
-            vlan_routers = [self._add_vlan_router(vlan_id, bare)]
+        # FIXME: Decide the semantics of switching a VLAN router
+        # between bare and not, on the fly.
+        # Will require clearing rules associated with a given VLAN
+        # on the switch, and replacing with new rules.
+        bare = False
+        if REST_BARE in param:
+            bare = param[REST_BARE]
+            try:
+                bare = bool(strtobool(bare))
+            except ValueError as e:
+                err_msg = 'Invalid [%s] value. %s'
+                raise ValueError(err_msg % (REST_BARE, e.message))
+
+        if vlan_id != REST_ALL:
+            self._add_vlan_router(vlan_id, bare)
 
         msgs = []
+        vlan_routers = self._get_vlan_router(vlan_id)
         for vlan_router in vlan_routers:
-            # FIXME: Decide the semantics of making a router bare or not, dynamically.
             if not vlan_router.bare:
                 try:
                     msg = vlan_router.set_data(param)
@@ -147,13 +150,12 @@ class Router(dict):
     def delete_data(self, vlan_id, param, waiters):
         msgs = []
         vlan_routers = self._get_vlan_router(vlan_id)
-        if vlan_routers:
-            for vlan_router in vlan_routers:
-                msg = vlan_router.delete_data(param, waiters)
-                if msg:
-                    msgs.append(msg)
-                # Check unnecessary VlanRouter.
-                self._del_vlan_router(vlan_router.vlan_id, waiters)
+        for vlan_router in vlan_routers:
+            msg = vlan_router.delete_data(param, waiters)
+            if msg:
+                msgs.append(msg)
+            # Check unnecessary VlanRouter.
+            self._del_vlan_router(vlan_router.vlan_id, waiters)
         if not msgs:
             msgs = [{REST_RESULT: REST_NG,
                      REST_DETAILS: 'Data is nothing.'}]
@@ -205,7 +207,7 @@ class Router(dict):
     def _cyclic_update_routing_tbls(self):
         while True:
             # send ARP to all gateways.
-            for vlan_router in self.values():
+            for vlan_router in six.itervalues(self):
                 vlan_router.send_arp_all_gw()
                 hub.sleep(1)
 
@@ -321,7 +323,7 @@ class VlanRouter(object):
 
     def _get_address_data(self):
         address_data = []
-        for value in self.address_data.values():
+        for value in six.itervalues(self.address_data):
             default_gw = ip_addr_ntoa(value.default_gw)
             address = '%s/%d' % (default_gw, value.netmask)
             data = {REST_ADDRESSID: value.address_id,
@@ -331,7 +333,7 @@ class VlanRouter(object):
 
     def _get_routing_data(self):
         routing_data = []
-        for table in self.policy_routing_tbl.values():
+        for table in six.itervalues(self.policy_routing_tbl):
             for dst, route in six.iteritems(table):
                 gateway = ip_addr_ntoa(route.gateway_ip)
                 source_addr = ip_addr_ntoa(route.src_ip)
@@ -533,7 +535,7 @@ class VlanRouter(object):
             address = self.address_data.get_data(ip=gateway_ip)
             if gateway_mac is not None and address is not None:
                 src_ip = address.default_gw
-                for send_port in self.port_data.values():
+                for send_port in six.itervalues(self.port_data):
                     src_mac = send_port.hw_addr
                     out_port = send_port.port_no
                     header_list = dict()
@@ -1170,7 +1172,7 @@ class VlanRouter(object):
     def send_arp_request(self, src_ip, dst_ip, in_port=None):
         # Send ARP request from all ports.
         self.logger.info('Sending ARP request from [%s] asking who-has [%s].', src_ip, dst_ip)
-        for send_port in self.port_data.values():
+        for send_port in six.itervalues(self.port_data):
             if in_port is None or in_port != send_port.port_no:
                 src_mac = send_port.hw_addr
                 dst_mac = mac_lib.BROADCAST_STR
@@ -1214,7 +1216,7 @@ class VlanRouter(object):
 
         default_route = self.policy_routing_tbl.get_data(dst_ip=INADDR_ANY_BASE, src_ip=src_ip)
         gateway_flg = False
-        for table in self.policy_routing_tbl.values():
+        for table in six.itervalues(self.policy_routing_tbl):
             for key, value in six.iteritems(table):
                 if value.gateway_ip == src_ip:
                     gateway_flg = True

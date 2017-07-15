@@ -40,7 +40,7 @@ class AddressData(dict):
         nw_addr, mask, default_gw = nw_addr_aton(address, err_msg=err_msg)
 
         # Check overlaps
-        for other in self.values():
+        for other in six.itervalues(self):
             other_mask = mask_ntob(other.netmask)
             add_mask = mask_ntob(mask, err_msg=err_msg)
             if (other.nw_addr == ipv4_apply_mask(default_gw, other.netmask) or
@@ -68,7 +68,7 @@ class AddressData(dict):
                 return
 
     def get_default_gw(self):
-        return [address.default_gw for address in self.values()]
+        return [address.default_gw for address in six.itervalues(self)]
 
     def get_data(self, addr_id=None, ip=None):
         if addr_id is not None:
@@ -80,7 +80,7 @@ class AddressData(dict):
                             address.nw_addr)
 
         try:
-            for address in self.values():
+            for address in six.itervalues(self):
                 if find_address(address):
                     return address
         except NameError:
@@ -135,7 +135,7 @@ class PolicyRoutingTable(dict):
         return added_route
 
     def delete(self, route_id):
-        for table in self.values():
+        for table in six.itervalues(self):
             table.delete(route_id)
         return
 
@@ -152,7 +152,7 @@ class PolicyRoutingTable(dict):
 
     def get_all_gateway_info(self):
         all_gateway_info = []
-        for table in self.values():
+        for table in six.itervalues(self):
             all_gateway_info += table.get_all_gateway_info()
         return all_gateway_info
 
@@ -160,7 +160,7 @@ class PolicyRoutingTable(dict):
         desired_table = self[INADDR_ANY]
 
         if src_ip is not None:
-            for table in self.values():
+            for table in six.itervalues(self):
                 if table.src_address is not None:
                      if (table.src_address.nw_addr == ipv4_apply_mask(src_ip, table.src_address.netmask)):
                          desired_table = table
@@ -216,22 +216,21 @@ class RoutingTable(dict):
 
     def get_all_gateway_info(self):
         all_gateway_info = []
-        for route in self.values():
+        for route in six.itervalues(self):
             gateway_info = (route.gateway_ip, route.gateway_mac)
             all_gateway_info.append(gateway_info)
         return all_gateway_info
 
     def get_data(self, gw_mac=None, dst_ip=None):
         if gw_mac is not None:
-            for route in self.values():
+            for route in six.itervalues(self):
                 if gw_mac == route.gateway_mac:
                     return route
             return None
-
         elif dst_ip is not None:
             get_route = None
             mask = 0
-            for route in self.values():
+            for route in six.itervalues(self):
                 if ipv4_apply_mask(dst_ip, route.dst_netmask) == route.dst_ip:
                     # For longest match
                     if mask < route.dst_netmask:

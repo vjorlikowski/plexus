@@ -246,7 +246,7 @@ class OfCtl_v1_0(OfCtl):
 
         # Match
         wildcards = ofp.OFPFW_ALL
-        if in_port:
+        if in_port is not None:
             wildcards &= ~ofp.OFPFW_IN_PORT
         if dl_type:
             wildcards &= ~ofp.OFPFW_DL_TYPE
@@ -374,7 +374,7 @@ class OfCtl_after_v1_2(OfCtl):
 
         # Match
         match = ofp_parser.OFPMatch()
-        if in_port:
+        if in_port is not None:
             match.set_in_port(in_port)
         if dl_type:
             match.set_dl_type(dl_type)
