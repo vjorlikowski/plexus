@@ -106,8 +106,6 @@ def mask_ntob(mask, err_msg=None):
         raise ValueError(msg)
 
 def ipv4_apply_mask(address, prefix_len, err_msg=None):
-    import itertools
-
     if not isinstance(address, str):
         raise ValueError('ipv4_apply_mask: address parameter was not a string.')
     address_int = ipv4_text_to_int(address)
