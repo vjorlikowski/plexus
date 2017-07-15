@@ -291,14 +291,7 @@ class VlanRouter(object):
         msg.setdefault(REST_VLANID, self.vlan_id)
         return msg
 
-    def _check_quiescing(self):
-        if self.quiescing:
-            msg = 'VlanRouter for VLAN %s shutting down.' % self.vlan_id
-            raise CommandFailure(msg=msg)
-
     def get_data(self):
-        self._check_quiescing()
-
         data = {}
 
         if self.bare:
@@ -340,7 +333,10 @@ class VlanRouter(object):
         return {REST_ROUTE: routing_data}
 
     def set_data(self, data):
-        self._check_quiescing()
+        # Bail out, if we're shutting down.
+        if self.quiescing:
+            msg = {REST_RESULT: REST_NG, REST_DETAILS: "Shutting down."}
+            return self._response(msg)
 
         details = None
 
@@ -384,8 +380,6 @@ class VlanRouter(object):
             raise ValueError('Invalid parameter.')
 
     def _set_address_data(self, address):
-        self._check_quiescing()
-
         address = self.address_data.add(address)
 
         cookie = self._id_to_cookie(REST_ADDRESSID, address.address_id)
@@ -572,7 +566,10 @@ class VlanRouter(object):
         self.logger.info('Set %s (packet in) flow [cookie=0x%x]', log_msg, cookie)
 
     def delete_data(self, data, waiters):
-        self._check_quiescing()
+        # Bail out, if we're shutting down.
+        if self.quiescing:
+            msg = {REST_RESULT: REST_NG, REST_DETAILS: "Shutting down."}
+            return self._response(msg)
 
         if REST_ROUTEID in data:
             route_id = data[REST_ROUTEID]
