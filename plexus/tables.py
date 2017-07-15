@@ -143,13 +143,6 @@ class PolicyRoutingTable(dict):
         self[key] = RoutingTable(address)
         return self[key]
 
-    def gc_subnet_tables(self):
-        for key, value in six.iteritems(self):
-            if key != INADDR_ANY:
-                if (len(value) == 0):
-                    del self[key]
-        return
-
     def get_all_gateway_info(self):
         all_gateway_info = []
         for table in six.itervalues(self):
@@ -324,7 +317,6 @@ class PenaltyBoxList(list):
                 entry.count -= PENALTY_BOX_DRAIN_AMOUNT
                 if (entry.count <= 0):
                     self.remove(entry)
-                hub.sleep(0)
             hub.sleep(PENALTY_BOX_CHECK_INTERVAL)
 
 
@@ -354,7 +346,6 @@ class MACAddressTable(dict):
             for mac, entry in six.iteritems(self):
                 if (entry.expire_time < current_time):
                     del self[mac]
-                hub.sleep(0)
             hub.sleep(MAC_ADDRESS_GC_INTERVAL)
 
 

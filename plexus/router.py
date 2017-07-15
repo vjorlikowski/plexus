@@ -86,20 +86,13 @@ class Router(dict):
         return self[vlan_id]
 
     def _del_vlan_router(self, vlan_id, waiters):
-        # GC empty subnet routing tables before attempting any deletions.
-        vlan_router = self[vlan_id]
-        vlan_router.policy_routing_tbl.gc_subnet_tables()
-
         # We never delete the default VLAN.
         # FIXME: How can the default VLAN be converted to "bare," if so desired?
         if vlan_id == VLANID_NONE:
             return
 
-        if (len(vlan_router.address_data) == 0
-                and len(vlan_router.policy_routing_tbl) == 1
-                and len(vlan_router.policy_routing_tbl[INADDR_ANY]) == 0):
-            vlan_router.delete(waiters)
-            del self[vlan_id]
+        self[vlan_id].delete(waiters)
+        del self[vlan_id]
 
     def get_data(self, vlan_id, dummy1, dummy2):
         vlan_routers = self._get_vlan_router(vlan_id)
@@ -207,7 +200,7 @@ class Router(dict):
     def _cyclic_update_routing_tbls(self):
         while True:
             # send ARP to all gateways.
-            for vlan_router in six.itervalues(self):
+            for vlan_router in self.values():
                 vlan_router.send_arp_all_gw()
                 hub.sleep(1)
 
@@ -1102,7 +1095,7 @@ class VlanRouter(object):
             else:
                 self.logger.info('Egress port not found for: [%s]', dst_mac)
                 self.logger.info('Generating ARP to search for: [%s]', dst_mac)
-                self.send_arp_request(src_ip, dst_ip, in_port=in_port)
+                self.send_arp_request(src_ip, dst_ip, in_port, src_mac)
 
             if out_port is not None:
                 actions = [self.dp.ofproto_parser.OFPActionOutput(out_port)]
@@ -1141,7 +1134,7 @@ class VlanRouter(object):
 
             if arp_src_ip is not None:
                 self.packet_buffer.add(in_port, header_list, msg.data)
-                self.send_arp_request(arp_src_ip, dst_ip, in_port=in_port)
+                self.send_arp_request(arp_src_ip, dst_ip, in_port)
                 self.logger.info('Flooding ARP request on behalf of [%s]: [%s] asking who-has [%s]',
                                  src_ip_str, arp_src_ip, dst_ip_str)
             else:
@@ -1169,15 +1162,20 @@ class VlanRouter(object):
             address = self.address_data.get_data(ip=gateway_ip)
             self.send_arp_request(address.default_gw, gateway_ip)
 
-    def send_arp_request(self, src_ip, dst_ip, in_port=None):
+    def send_arp_request(self, src_ip, dst_ip, in_port=None, proxy_src_mac=None):
         # Send ARP request from all ports.
         self.logger.info('Sending ARP request from [%s] asking who-has [%s].', src_ip, dst_ip)
         for send_port in six.itervalues(self.port_data):
             if in_port is None or in_port != send_port.port_no:
-                src_mac = send_port.hw_addr
                 dst_mac = mac_lib.BROADCAST_STR
                 arp_target_mac = mac_lib.DONTCARE_STR
-                inport = self.dp.ofproto.OFPP_CONTROLLER
+                if ((proxy_src_mac is not None) and
+                    (in_port is not None)):
+                    src_mac = proxy_src_mac
+                    inport = in_port
+                else:
+                    src_mac = send_port.hw_addr
+                    inport = self.dp.ofproto.OFPP_CONTROLLER
                 output = send_port.port_no
                 self.ofctl.send_arp(arp.ARP_REQUEST, self.vlan_id,
                                     src_mac, dst_mac, src_ip, dst_ip,
