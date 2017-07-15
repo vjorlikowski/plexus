@@ -837,7 +837,7 @@ class VlanRouter(object):
             (src_mac != mac_lib.UNICAST)):
             existing_mac_entry = self.mac_table.get(src_mac)
             if existing_mac_entry:
-                existing_mac_entry.refresh()
+                existing_mac_entry.refresh(in_port)
             else:
                 self.mac_table[src_mac] = MACAddressEntry(in_port)
 

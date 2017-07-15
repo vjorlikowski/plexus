@@ -86,9 +86,9 @@ PENALTY_BOX_IPV4_DISCONNECT_THRESHOLD = (PENALTY_BOX_ENTRY_IPV4_MAXHITS * 2)
 PENALTY_BOX_IPV4_HARD_TIMEOUT = 15
 
 # Time, in seconds, that a cached MAC address should be retained after last update
-MAC_ADDRESS_TTL = 300
+MAC_ADDRESS_TTL = 600
 # Time, in seconds, between MAC address table garbage collections
-MAC_ADDRESS_GC_INTERVAL = 15
+MAC_ADDRESS_GC_INTERVAL = 5
 
 ARP_REPLY_TIMER = 10  # sec
 OFP_REPLY_TIMER = 1.0  # sec
