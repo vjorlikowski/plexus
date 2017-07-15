@@ -59,8 +59,9 @@ class Router(dict):
         self.thread.wait()
         self.logger.info('Stopped cyclic routing table update.')
         for vlan_router in self.values():
+            self.pop(vlan_router.vlan_id)
             vlan_router.shutdown()
-            del self[vlan_router.vlan_id]
+            del vlan_router
 
     def _get_vlan_router(self, vlan_id):
         vlan_routers = []
@@ -91,8 +92,9 @@ class Router(dict):
         if vlan_id == VLANID_NONE:
             return
 
-        self[vlan_id].delete(waiters)
-        del self[vlan_id]
+        vlan_router = self.pop(vlan_id)
+        vlan_router.delete(waiters)
+        del vlan_router
 
     def get_data(self, vlan_id, dummy1, dummy2):
         vlan_routers = self._get_vlan_router(vlan_id)
@@ -127,12 +129,8 @@ class Router(dict):
                 try:
                     msg = vlan_router.set_data(param)
                     msgs.append(msg)
-                    if msg[REST_RESULT] == REST_NG:
-                        # Setting data failed.
-                        self._del_vlan_router(vlan_router.vlan_id, waiters)
                 except ValueError as err_msg:
                     # Setting data failed.
-                    self._del_vlan_router(vlan_router.vlan_id, waiters)
                     raise err_msg
             else:
                 msgs.append({REST_RESULT: REST_OK, REST_VLANID: vlan_id})
@@ -141,14 +139,13 @@ class Router(dict):
                 REST_COMMAND_RESULT: msgs}
 
     def delete_data(self, vlan_id, param, waiters):
+        # FIXME: Handle properly deleting a VLAN router
         msgs = []
         vlan_routers = self._get_vlan_router(vlan_id)
         for vlan_router in vlan_routers:
             msg = vlan_router.delete_data(param, waiters)
             if msg:
                 msgs.append(msg)
-            # Check unnecessary VlanRouter.
-            self._del_vlan_router(vlan_router.vlan_id, waiters)
         if not msgs:
             msgs = [{REST_RESULT: REST_NG,
                      REST_DETAILS: 'Data is nothing.'}]
@@ -335,7 +332,7 @@ class VlanRouter(object):
     def set_data(self, data):
         # Bail out, if we're shutting down.
         if self.quiescing:
-            msg = {REST_RESULT: REST_NG, REST_DETAILS: "Shutting down."}
+            msg = {REST_RESULT: REST_NG, REST_DETAILS: 'Shutting down.'}
             return self._response(msg)
 
         details = None
